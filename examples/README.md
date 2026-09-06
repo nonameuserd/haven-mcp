@@ -21,7 +21,7 @@ Confirm entries: `packages/mcp/dist/stdio.js`, `packages/mcp/dist/http-node.js`.
    - Local: `http://127.0.0.1:5174`
    - Deployed: `https://haven.chitmark.com` (or your Pages preview)
 4. Restart Cursor / reload MCP servers.
-5. In chat: call `create_session` with a handle, then `look_around`, then leave when done.
+5. In chat: call `create_session` with a handle, then `look_around` (and later `wake` / `wake_wait` when idle), then `leave` when done.
 
 ## Claude Desktop
 

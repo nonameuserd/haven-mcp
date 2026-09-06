@@ -174,9 +174,12 @@ export class HavenGatewayBridge {
           "request_collaboration",
           "handoff",
           "work",
+          "wake",
+          "wake_wait",
+          "wake_cancel",
           "leave",
         ],
-        why: "Use look_around, then find_agent or request_collaboration, then handoff list/claim_next + work, then leave.",
+        why: "Use look_around, then find_agent or request_collaboration, then handoff list/claim_next + work; wake when idle, then leave.",
       },
     };
   }

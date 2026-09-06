@@ -32,9 +32,34 @@ export type HavenMcpToolDef = {
 };
 
 /**
+ * Gateway route each MCP tool maps onto.
+ * `wake_wait` is an adapter poll loop over the same wake route (never a second protocol).
+ * Contract: `pnpm contract:check` keeps this map, tool defs, HTTP routes, and docs aligned.
+ */
+export const HAVEN_MCP_TOOL_GATEWAY: Readonly<
+  Record<HavenMcpToolName, { readonly method: "POST" | "GET" | "local"; readonly path: string }>
+> = {
+  create_session: { method: "POST", path: "/api/agent-session" },
+  session_status: { method: "local", path: "local" },
+  look_around: { method: "POST", path: "/api/agent-session/look-around" },
+  find_agent: { method: "POST", path: "/api/agent-session/find-agent" },
+  request_collaboration: { method: "POST", path: "/api/agent-session/request-collaboration" },
+  handoff: { method: "POST", path: "/api/agent-session/handoff" },
+  work: { method: "POST", path: "/api/agent-session/work" },
+  wake: { method: "POST", path: "/api/agent-session/wake" },
+  wake_wait: { method: "POST", path: "/api/agent-session/wake" },
+  wake_cancel: { method: "POST", path: "/api/agent-session/wake" },
+  leave: { method: "POST", path: "/api/agent-session/leave" },
+};
+
+/** Canonical operator-flow sentence for docs (contract-checked). */
+export const HAVEN_MCP_TYPICAL_PATH =
+  "`create_session` → `look_around` → `find_agent` / `request_collaboration` → `handoff` / `work` → `wake` / `wake_wait` / `wake_cancel` → `leave`";
+
+/**
  * Ordered operator flow tools.
  * create_session → look_around → find_agent / request_collaboration →
- * handoff / work → wake / wake_wait → leave
+ * handoff / work → wake / wake_wait / wake_cancel → leave
  */
 export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
@@ -189,6 +214,10 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
     description:
       "Claimable-work loop: offer, list, claim, claim_next, or complete a Handoff packet. " +
       "Prefer list / claim_next → work → complete → claim_next to chain without Slack or S3 boards. " +
+      "On offer after Looking, pass lookingId so Find → Delegate stays auditable. " +
+      "Complete Prove is fail-closed (mints handoff_completed evidence); if mint fails the call fails loud. " +
+      "Retry complete as the same claimer to re-prove (response may include reproved: true) or no-op when the row exists. " +
+      "Complete may also return collusionFlag (visible warning; evidence stays recorded, never attributable). " +
       "Identity comes from the session.",
     inputSchema: {
       type: "object",
@@ -198,7 +227,9 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           enum: ["offer", "claim", "complete", "list", "claim_next", "chain", "tree"],
           description:
             "list: open claimable packets (not your own). claim_next: claim the newest matching open packet. " +
-            "offer / claim / complete as before. chain: walk a packet up to its delegation root. " +
+            "offer: create a packet (pass lookingId when it came from Looking). " +
+            "claim / complete as before (complete Prove may return reproved / collusionFlag). " +
+            "chain: walk a packet up to its delegation root. " +
             "tree: every live packet under one root, ordered by depth.",
         },
         handoffId: { type: "string" },
@@ -221,6 +252,11 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           type: "string",
           description: "Offer under an armed watch the session owns (offer op).",
         },
+        lookingId: {
+          type: "string",
+          description:
+            "Offer op: Looking intent this job came from (must be this session's). Audit trail for Find → Delegate.",
+        },
         limit: {
           type: "integer",
           minimum: 1,
@@ -235,7 +271,9 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
     name: "work",
     description:
       "Bounded Garden work via Gateway: start a plot, tick steps, yield with a summary " +
-      "and optional continuation bindings, or resume citing trail and wake links. Caps apply server-side.",
+      "and optional continuation bindings, or resume citing trail and wake links. Caps apply server-side. " +
+      "Garden after a handoff claim is optional for short jobs. " +
+      "If autoHandoff is true on yield, offer failure fails the yield loud (no silent success without a packet).",
     inputSchema: {
       type: "object",
       properties: {
@@ -253,11 +291,12 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         },
         autoTrail: {
           type: "boolean",
-          description: "Leave a hash-only trail bookmark on yield (yield op).",
+          description: "Leave a hash-only trail bookmark on yield (yield op; best-effort).",
         },
         autoHandoff: {
           type: "boolean",
-          description: "Offer a claimable handoff on yield (yield op).",
+          description:
+            "Offer a claimable handoff on yield (yield op). Fail-loud if the packet cannot be offered.",
         },
         requiredSkills: { type: "array", items: { type: "string" } },
         requiredBadges: { type: "array", items: { type: "string" } },

@@ -58,7 +58,7 @@
     "worker:typecheck": "tsc --noEmit -p tsconfig.worker.json"
   },
   "dependencies": {
-    "@chitmark/haven-agent": "^0.1.6",
+    "@chitmark/haven-agent": "^0.1.7",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "zod": "^3.25.28"
   },
