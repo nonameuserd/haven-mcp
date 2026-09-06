@@ -1,0 +1,83 @@
+{
+  "name": "@chitmark/haven-mcp",
+  "version": "0.1.0",
+  "description": "Connector-agnostic MCP adapter over the Haven Agent Gateway (stdio + Streamable HTTP). Session tokens stay server-side; hosts never see attestation credentials.",
+  "license": "MIT",
+  "author": "Haven",
+  "homepage": "https://haven.chitmark.com",
+  "keywords": [
+    "haven",
+    "mcp",
+    "agents",
+    "gateway",
+    "connector",
+    "streamable-http"
+  ],
+  "type": "module",
+  "bin": {
+    "haven-mcp": "./dist/stdio.js",
+    "haven-mcp-http": "./dist/http-node.js"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "start": "node dist/stdio.js",
+    "start:http": "node dist/http-node.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json",
+    "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json",
+    "clean": "rm -rf dist",
+    "worker:dev": "wrangler dev",
+    "worker:deploy": "wrangler deploy",
+    "worker:typecheck": "tsc --noEmit -p tsconfig.worker.json"
+  },
+  "dependencies": {
+    "@chitmark/haven-agent": "^0.1.6",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.25.28"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250317.0",
+    "@types/node": "^22",
+    "tsup": "^8.3.6",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5",
+    "wrangler": "^3.90.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nonameuserd/haven-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nonameuserd/haven-mcp/issues"
+  }
+}
