@@ -352,6 +352,11 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           type: "string",
           description: "Packet id from list, offer, or claim_next. Required for claim, complete, chain, tree.",
         },
+        evidenceNote: {
+          type: "string",
+          description:
+            "Deliverable text recorded into the Prove row, max 1500 chars, secret-scanned (complete op). Larger artifacts go to Board/Library with an id cited here.",
+        },
         parentId: {
           type: "string",
           description: "Continue a held packet you offered or claimed (offer op; custody and depth cap 5 enforced).",
