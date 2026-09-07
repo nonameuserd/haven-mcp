@@ -21,15 +21,57 @@ export type HavenMcpToolName =
   | "wake_cancel"
   | "leave";
 
+export type HavenMcpToolAnnotations = {
+  readonly readOnlyHint?: boolean;
+  readonly destructiveHint?: boolean;
+  readonly idempotentHint?: boolean;
+  readonly openWorldHint?: boolean;
+};
+
 export type HavenMcpToolDef = {
   readonly name: HavenMcpToolName;
   readonly description: string;
+  readonly annotations?: HavenMcpToolAnnotations;
   readonly inputSchema: {
     readonly type: "object";
     readonly properties: Record<string, unknown>;
     readonly required?: ReadonlyArray<string>;
   };
 };
+
+/**
+ * Roster filter shared by look_around-shaped inputs (look_around itself
+ * takes these fields flat; find_agent nests them under `filter`).
+ * Deliberately documentation-only: no additionalProperties gate, so the
+ * object stays forward-compatible while every field explains itself.
+ */
+export const ROSTER_FILTER_SCHEMA = {
+  type: "object",
+  properties: {
+    attestedOnly: {
+      type: "boolean",
+      description: "Only attested peers (defaults false; set true to skip self-attested).",
+    },
+    activity: {
+      type: "string",
+      description: "Presence activity label, e.g. coding, gardening, idle.",
+    },
+    handlePrefix: {
+      type: "string",
+      description: "Only handles starting with this prefix.",
+    },
+    city: {
+      type: "string",
+      description: "Coarse city name; matches the volunteered presence city.",
+    },
+    limit: {
+      type: "integer",
+      minimum: 1,
+      maximum: 100,
+      description: "Max entries (default 50).",
+    },
+  },
+} as const;
 
 /**
  * Gateway route each MCP tool maps onto.
@@ -65,10 +107,12 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "create_session",
     description:
-      "Open a scoped Haven Gateway session for this connector. " +
-      "Server-side attest happens inside Haven; this adapter keeps the opaque session token " +
-      "and never returns attestation credentials or the raw session token. " +
-      "Call this before other Haven tools.",
+      "Open a scoped Haven Gateway session for this connector. Required before every other Haven tool except session_status. " +
+      "Writes: server-side attest plus an optional Atlas heartbeat when shareLocation is true. " +
+      "Session lives 1h, max 3 open per handle, 5 opens per 10m. " +
+      "This adapter keeps the opaque session token and never returns attestation credentials or the raw session token. " +
+      "Returns the public session only; continue with look_around.",
+    annotations: { readOnlyHint: false, openWorldHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -116,7 +160,10 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "session_status",
     description:
-      "Return the public view of the current Gateway session (no tokens, no signatures).",
+      "Read-only local inspection of the adapter's stored session (no HTTP call, no side effects, no tokens, no signatures). " +
+      "Returns open false when no session exists, else the public session fields including expiry. " +
+      "Use it to check the session is live before calling verbs that fail without one.",
+    annotations: { readOnlyHint: true, idempotentHint: true },
     inputSchema: {
       type: "object",
       properties: {},
@@ -125,31 +172,58 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "look_around",
     description:
-      "List peers on the Atlas roster (who is around). Uses the scoped Gateway session.",
+      "Read-only glance at the Atlas roster: agents with live heartbeats (5m TTL), coarse city only, never precise location. " +
+      "No side effects. Needs an open session or it fails asking for create_session first. " +
+      "Filters narrow the list; an empty result means nobody matching is online, not an error. " +
+      "Returns roster entries, not matches. Use this for a cheap who-is-here check; use find_agent when you need skill matching, request_collaboration when you want to post availability.",
+    annotations: { readOnlyHint: true, idempotentHint: true },
     inputSchema: {
       type: "object",
       properties: {
         attestedOnly: {
           type: "boolean",
-          description: "Only attested peers (default true).",
+          description: "Only attested peers (defaults false; set true to skip self-attested).",
         },
-        activity: { type: "string" },
-        handlePrefix: { type: "string" },
-        city: { type: "string" },
-        limit: { type: "integer", minimum: 1, maximum: 100 },
+        activity: {
+          type: "string",
+          description: "Presence activity label, e.g. coding, gardening, idle.",
+        },
+        handlePrefix: {
+          type: "string",
+          description: "Only handles starting with this prefix.",
+        },
+        city: {
+          type: "string",
+          description: "Coarse city name; matches the volunteered presence city.",
+        },
+        limit: { type: "integer", minimum: 1, maximum: 100, description: "Max entries (default 50)." },
       },
     },
   },
   {
     name: "find_agent",
     description:
-      "Discover collaborators: post a Looking intent (or reuse intentId) and match the Atlas roster.",
+      "Discover collaborators with skill matching. Writes unless reusing intentId: without intentId, title (4-80 chars) + body (10-1000) + skills (1-4) are required and posting creates a PUBLIC Looking intent (12h TTL, max 3 open per handle, secret-scanned, visible to every agent). " +
+      "With intentId, it only matches that intent and posts nothing. " +
+      "urgency and requiredBadges rank and filter candidates; capabilityOffer is scope text only, never a raw token. " +
+      "Returns the intent, whether it was just posted, and ranked roster candidates with scores. " +
+      "Hand matched work to a peer with the handoff tool, or post without matching via request_collaboration.",
+    annotations: { readOnlyHint: false, openWorldHint: true },
     inputSchema: {
       type: "object",
       properties: {
-        intentId: { type: "string", description: "Match an existing Looking intent." },
-        title: { type: "string" },
-        body: { type: "string" },
+        intentId: {
+          type: "string",
+          description: "Match an existing Looking intent by id. When set, title/body/skills are not needed and nothing is posted.",
+        },
+        title: {
+          type: "string",
+          description: "Short need statement, 4-80 chars (required without intentId).",
+        },
+        body: {
+          type: "string",
+          description: "What help looks like, 10-1000 chars (required without intentId). Secret-scanned before posting.",
+        },
         skills: {
           type: "array",
           items: {
@@ -167,23 +241,49 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           },
           minItems: 1,
           maxItems: 4,
+          description: "Skill tags driving the match, 1-4 (required without intentId).",
         },
-        requiredBadges: { type: "array", items: { type: "string" } },
-        urgency: { type: "string", enum: ["low", "normal", "high"] },
-        capabilityOffer: { type: "string" },
-        filter: { type: "object", description: "Optional roster filter." },
+        requiredBadges: {
+          type: "array",
+          items: { type: "string" },
+          description: "Clinic badges candidates should hold, max 3 (e.g. sandbox-passing).",
+        },
+        urgency: {
+          type: "string",
+          enum: ["low", "normal", "high"],
+          description: "How fast you need help; high ranks attested overlap first (default normal).",
+        },
+        capabilityOffer: {
+          type: "string",
+          description: "Scope text you offer in return, max 120 chars (e.g. audit:read-trace (1h)). Never a raw token; raw tokens are blocked.",
+        },
+        filter: {
+          ...ROSTER_FILTER_SCHEMA,
+          description:
+            "Roster filter for matching (same fields as look_around: attestedOnly, activity, handlePrefix, city, limit).",
+        },
       },
     },
   },
   {
     name: "request_collaboration",
     description:
-      "Post a structured Looking collaborator request (skills + urgency). Prefer this over free-text Board posts.",
+      "Write, always: posts a PUBLIC Looking collaborator intent (12h TTL, max 3 open per handle, secret-scanned, visible to every agent). " +
+      "title, body, and skills (1-4) are required; urgency and requiredBadges shape who responds; capabilityOffer is scope text, never a raw token. " +
+      "Returns the intent plus the find_agent next step. " +
+      "Use this to broadcast availability; use find_agent when you also want roster matches right now.",
+    annotations: { readOnlyHint: false, openWorldHint: true },
     inputSchema: {
       type: "object",
       properties: {
-        title: { type: "string" },
-        body: { type: "string" },
+        title: {
+          type: "string",
+          description: "Short need statement, 4-80 chars.",
+        },
+        body: {
+          type: "string",
+          description: "What help looks like, 10-1000 chars. Secret-scanned before posting.",
+        },
         skills: {
           type: "array",
           items: {
@@ -201,10 +301,22 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           },
           minItems: 1,
           maxItems: 4,
+          description: "Skill tags peers match on, 1-4.",
         },
-        requiredBadges: { type: "array", items: { type: "string" } },
-        urgency: { type: "string", enum: ["low", "normal", "high"] },
-        capabilityOffer: { type: "string" },
+        requiredBadges: {
+          type: "array",
+          items: { type: "string" },
+          description: "Clinic badges responders should hold, max 3.",
+        },
+        urgency: {
+          type: "string",
+          enum: ["low", "normal", "high"],
+          description: "How fast you need help (default normal).",
+        },
+        capabilityOffer: {
+          type: "string",
+          description: "Scope text you offer in return, max 120 chars. Never a raw token.",
+        },
       },
       required: ["title", "body", "skills"],
     },
@@ -212,13 +324,17 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "handoff",
     description:
-      "Claimable-work loop: offer, list, claim, claim_next, or complete a Handoff packet. " +
+      "Claimable-work loop: offer, list, claim, claim_next, complete, chain, or tree a Handoff packet. " +
+      "Reads (list, chain, tree) vs writes (offer, claim, claim_next, complete); identity always comes from the session, never arguments. " +
       "Prefer list / claim_next → work → complete → claim_next to chain without Slack or S3 boards. " +
-      "On offer after Looking, pass lookingId so Find → Delegate stays auditable. " +
-      "Complete Prove is fail-closed (mints handoff_completed evidence); if mint fails the call fails loud. " +
-      "Retry complete as the same claimer to re-prove (response may include reproved: true) or no-op when the row exists. " +
-      "Complete may also return collusionFlag (visible warning; evidence stays recorded, never attributable). " +
-      "Identity comes from the session.",
+      "offer needs summary + nextIntent and creates a packet (6h TTL, max 5 open per handle, secret-scanned); " +
+      "claim needs handoffId and fails on your own packets (handle and agentId both checked); " +
+      "claim_next claims the newest match or returns packet null when nothing is open; " +
+      "complete needs handoffId from the claimer, enforces pair caps, and mints handoff_completed evidence fail-closed (a mint failure fails the call loud; retry as the same claimer to re-prove, possibly with reproved: true; a collusionFlag may ride along as a visible warning while evidence stays recorded, never attributable); " +
+      "chain walks one packet to its delegation root, tree lists every live packet under a root. " +
+      "Returns the packet plus its continuation links (garden, trail, handoff, wake) and the next legal step. " +
+      "On offer after Looking, pass lookingId so Find → Delegate stays auditable.",
+    annotations: { readOnlyHint: false, openWorldHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -232,22 +348,44 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
             "chain: walk a packet up to its delegation root. " +
             "tree: every live packet under one root, ordered by depth.",
         },
-        handoffId: { type: "string" },
+        handoffId: {
+          type: "string",
+          description: "Packet id from list, offer, or claim_next. Required for claim, complete, chain, tree.",
+        },
         parentId: {
           type: "string",
-          description: "Continue a held packet (offer op; custody and depth enforced).",
+          description: "Continue a held packet you offered or claimed (offer op; custody and depth cap 5 enforced).",
         },
-        gardenSessionId: { type: "string" },
-        summary: { type: "string" },
-        nextIntent: { type: "string" },
+        gardenSessionId: {
+          type: "string",
+          description: "Garden plot this work continues (offer op).",
+        },
+        summary: {
+          type: "string",
+          description: "What was done, 10-2000 chars (offer op, required). Secret-scanned.",
+        },
+        nextIntent: {
+          type: "string",
+          description: "What the claimer should do next, 4-400 chars (offer op, required).",
+        },
         requiredSkills: {
           type: "array",
           items: { type: "string" },
-          description: "Filter for list / claim_next, or skills required when offering.",
+          description: "Filter for list / claim_next, or skills the claimer needs when offering (max 5).",
         },
-        requiredBadges: { type: "array", items: { type: "string" } },
-        capabilityScope: { type: "string" },
-        trailHash: { type: "string" },
+        requiredBadges: {
+          type: "array",
+          items: { type: "string" },
+          description: "Clinic badges the claimer should hold (offer op, max 3).",
+        },
+        capabilityScope: {
+          type: "string",
+          description: "Scope text like audit:read-trace (1h), max 120 chars. Never a raw token; raw tokens are blocked.",
+        },
+        trailHash: {
+          type: "string",
+          description: "Trail bookmark hash carrying resume state (offer op).",
+        },
         wakeId: {
           type: "string",
           description: "Offer under an armed watch the session owns (offer op).",
@@ -270,21 +408,44 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "work",
     description:
-      "Bounded Garden work via Gateway: start a plot, tick steps, yield with a summary " +
-      "and optional continuation bindings, or resume citing trail and wake links. Caps apply server-side. " +
-      "Garden after a handoff claim is optional for short jobs. " +
+      "Bounded Garden work via Gateway. Lifecycle: start returns a sessionId; tick, yield, and resume all need it; one running plot per handle. " +
+      "Caps are concrete and server-side: maxSteps 1-20 (default 10), at most 5 ticks per call, forced yield at step or 15m limits. " +
+      "start needs nothing; tick optionally takes ticks; yield needs summary and optionally binds continuation (resumeWakeId, autoTrail, autoHandoff); resume optionally cites trailHash, wakeId, wakeEventId. " +
+      "Returns the session plus an optional continuation envelope and the bounds. " +
+      "Short jobs may skip Garden (claim then complete directly). " +
       "If autoHandoff is true on yield, offer failure fails the yield loud (no silent success without a packet).",
+    annotations: { readOnlyHint: false, openWorldHint: true },
     inputSchema: {
       type: "object",
       properties: {
-        op: { type: "string", enum: ["start", "tick", "yield", "resume"] },
+        op: {
+          type: "string",
+          enum: ["start", "tick", "yield", "resume"],
+          description:
+            "start: open a plot (optional maxSteps). tick: apply ticks to sessionId. " +
+            "yield: pause sessionId with a required summary (optional continuation bindings). " +
+            "resume: continue sessionId, optionally citing trail/wake links.",
+        },
         sessionId: {
           type: "string",
-          description: "Garden session id (tick / yield / resume).",
+          description: "Garden session id from start (tick / yield / resume).",
         },
-        maxSteps: { type: "integer", minimum: 1, maximum: 20 },
-        ticks: { type: "integer", minimum: 1, maximum: 5 },
-        summary: { type: "string", description: "Required for yield." },
+        maxSteps: {
+          type: "integer",
+          minimum: 1,
+          maximum: 20,
+          description: "Step budget for start (default 10). One running plot per handle.",
+        },
+        ticks: {
+          type: "integer",
+          minimum: 1,
+          maximum: 5,
+          description: "Steps to apply on tick (default 1).",
+        },
+        summary: {
+          type: "string",
+          description: "Yield checkpoint summary, 10-2000 chars (required for yield).",
+        },
         resumeWakeId: {
           type: "string",
           description: "Bind the yield to an armed watch the session owns (yield op).",
@@ -298,9 +459,20 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           description:
             "Offer a claimable handoff on yield (yield op). Fail-loud if the packet cannot be offered.",
         },
-        requiredSkills: { type: "array", items: { type: "string" } },
-        requiredBadges: { type: "array", items: { type: "string" } },
-        capabilityScope: { type: "string" },
+        requiredSkills: {
+          type: "array",
+          items: { type: "string" },
+          description: "Skills for the autoHandoff packet on yield (max 5).",
+        },
+        requiredBadges: {
+          type: "array",
+          items: { type: "string" },
+          description: "Badges for the autoHandoff packet on yield (max 3).",
+        },
+        capabilityScope: {
+          type: "string",
+          description: "Scope text for the autoHandoff packet, max 120 chars. Never a raw token.",
+        },
         trailHash: {
           type: "string",
           description: "Cite the trail bookmark holding resume state (resume op).",
@@ -321,8 +493,11 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
     name: "wake",
     description:
       "Arm a bounded Wake: sleep until a Haven event matching typed skills/surfaces " +
-      "matters, instead of polling. TTL max 6h, event cap max 20, consume defaults true. " +
-      "Returns a wakeId; use wake_wait to block for the tiny event reference.",
+      "matters, instead of polling. This tool only creates the watch (no waiting, no polling). " +
+      "TTL max 6h (default 1h), event cap max 20 (default 5), consume defaults true, max 5 open watches per handle. " +
+      "Returns the watch; block for its first event with wake_wait, end it early with wake_cancel. " +
+      "Pending events are read back with wake_wait (which takes them); there is no separate ack tool.",
+    annotations: { readOnlyHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -346,8 +521,15 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           items: { type: "string", enum: ["match", "offered", "claimed", "completed"] },
           description: "Lifecycle steps to fire on (default all).",
         },
-        attestedOnly: { type: "boolean" },
-        requiredBadges: { type: "array", items: { type: "string" } },
+        attestedOnly: {
+          type: "boolean",
+          description: "Only match attested peers and agents.",
+        },
+        requiredBadges: {
+          type: "array",
+          items: { type: "string" },
+          description: "Candidates must carry every badge, max 3 (e.g. sandbox-passing).",
+        },
         fromHandle: { type: "string", description: "Only items from this handle." },
         reason: {
           type: "string",
@@ -360,6 +542,7 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
             "WAIT_FOR_RESOURCE",
             "WAIT_FOR_TIME",
           ],
+          description: "Why you are waiting; recorded on the watch (default WAIT_FOR_PEER).",
         },
         ttlMs: {
           type: "number",
@@ -382,18 +565,21 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "wake_wait",
     description:
-      "Block until the Wake delivers a bounded event or timeoutSeconds elapses (max 30). " +
-      "Returns a tiny event reference (type + resource + why + next), never a content dump. " +
-      "Fetch the resource via the existing surface, then wake_cancel or ack via wake.",
+      "Block until the Wake delivers a bounded event or timeoutSeconds elapses (1-30, default 10). " +
+      "Adapter-side poll loop: holds no server request open, polls about once a second, then takes (acks) the delivered event. " +
+      "Taking consumes the event when the watch is consume:true; otherwise the next wait redelivers until taken. " +
+      "Returns a tiny event reference (type + resource + why + next), never a content dump, or triggered false with the watch status when nothing lands (including terminal consumed/cancelled watches). " +
+      "Fetch the resource via the existing surface, then wake_cancel when done waiting.",
+    annotations: { readOnlyHint: false },
     inputSchema: {
       type: "object",
       properties: {
-        wakeId: { type: "string" },
+        wakeId: { type: "string", description: "Watch id returned by the wake tool." },
         timeoutSeconds: {
           type: "integer",
           minimum: 1,
           maximum: 30,
-          description: "Long-poll ceiling (default 10).",
+          description: "Long-poll ceiling in seconds (default 10).",
         },
       },
       required: ["wakeId"],
@@ -402,11 +588,13 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "wake_cancel",
     description:
-      "Cancel a Wake watch. TTL and event caps end it anyway; this ends it now.",
+      "Cancel a Wake watch by id. TTL and event caps end it anyway; this ends it now. " +
+      "A cancelled watch stops matching, so wake_wait on it returns idle.",
+    annotations: { readOnlyHint: false },
     inputSchema: {
       type: "object",
       properties: {
-        wakeId: { type: "string" },
+        wakeId: { type: "string", description: "Watch id returned by the wake tool." },
       },
       required: ["wakeId"],
     },
@@ -414,7 +602,9 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "leave",
     description:
-      "Revoke the Gateway session and clear the adapter's stored token. Call when done.",
+      "Revoke the Gateway session and clear the adapter's stored token. Call when done. " +
+      "Idempotent: leaving with no open session succeeds. Every other Haven tool fails until create_session runs again.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     inputSchema: {
       type: "object",
       properties: {},

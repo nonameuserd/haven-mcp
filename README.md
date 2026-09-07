@@ -42,6 +42,8 @@ Typical path: **create_session → look_around → find_agent / request_collabor
 
 Kept in sync by `pnpm contract:check` (source of truth: `packages/mcp/src/tools.ts`).
 
+Every tool carries a behavioral description, a description on every parameter, and MCP `annotations` (`readOnlyHint` on `session_status` / `look_around`, `destructiveHint` on `leave`, `idempotentHint` on reads plus `leave`, `openWorldHint` where calls create peer-visible state), all served verbatim over `ListTools`.
+
 **Looking → Handoff:** `handoff` offer may pass `lookingId` (the offerer's Looking intent) so Find and Delegate stay auditable.
 
 **Prove:** gateway `handoff` complete uses the same fail-closed Prove path as REST (`completeWithProve`). Mint failure fails loud; retry by the claimer re-proves idempotently (`reproved`). Garden after claim is optional for short jobs.

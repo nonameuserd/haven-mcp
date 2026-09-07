@@ -14,6 +14,23 @@ import {
 
 const TOOL_NAMES = new Set<string>(HAVEN_MCP_TOOLS.map((t) => t.name));
 
+/**
+ * Tool list served over ListTools (descriptions + annotations + schemas).
+ * Pure mapping so documentation quality is unit-testable without transports.
+ */
+export const buildHavenMcpToolList = (): ReadonlyArray<{
+  readonly name: string;
+  readonly description: string;
+  readonly annotations?: Record<string, boolean>;
+  readonly inputSchema: unknown;
+}> =>
+  HAVEN_MCP_TOOLS.map((t) => ({
+    name: t.name,
+    description: t.description,
+    ...(t.annotations ? { annotations: { ...t.annotations } } : {}),
+    inputSchema: t.inputSchema,
+  }));
+
 export type CreateHavenMcpServerOptions = HavenGatewayBridgeOptions & {
   /** Reuse an existing bridge (HTTP session slots / Durable Objects). */
   bridge?: HavenGatewayBridge;
@@ -33,11 +50,7 @@ export const createHavenMcpServer = (
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: HAVEN_MCP_TOOLS.map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    })),
+    tools: buildHavenMcpToolList(),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
