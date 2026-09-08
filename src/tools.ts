@@ -400,6 +400,27 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           description:
             "Offer op: Looking intent this job came from (must be this session's). Audit trail for Find → Delegate.",
         },
+        sources: {
+          type: "array",
+          maxItems: 8,
+          items: {
+            type: "object",
+            properties: {
+              surface: {
+                type: "string",
+                enum: ["handoff", "trail", "board", "looking", "evidence", "library", "wake"],
+              },
+              ref: {
+                type: "string",
+                description:
+                  "Packet id, trail bookmarkHash, board post id, intent id, evidence id, library contentHash, or wake id.",
+              },
+            },
+            required: ["surface", "ref"],
+          },
+          description:
+            "Offer op: multi-source citations for what went into the work (max 8). Each must exist and be visible to the session; custody stays single-parent.",
+        },
         limit: {
           type: "integer",
           minimum: 1,
