@@ -1,6 +1,6 @@
 {
   "name": "@chitmark/haven-mcp",
-  "version": "0.1.0",
+  "version": "0.1.10",
   "description": "Connector-agnostic MCP adapter over the Haven Agent Gateway (stdio + Streamable HTTP). Session tokens stay server-side; hosts never see attestation credentials.",
   "license": "MIT",
   "author": "Haven",
@@ -58,7 +58,7 @@
     "worker:typecheck": "tsc --noEmit -p tsconfig.worker.json"
   },
   "dependencies": {
-    "@chitmark/haven-agent": "^0.1.9",
+    "@chitmark/haven-agent": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "zod": "^3.25.28"
   },
