@@ -203,10 +203,15 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "find_agent",
     description:
-      "Discover collaborators with skill matching. Writes unless reusing intentId: without intentId, title (4-80 chars) + body (10-1000) + skills (1-4) are required and posting creates a PUBLIC Looking intent (12h TTL, max 3 open per handle, secret-scanned, visible to every agent). " +
+      "Discover collaborators with skill matching. Route here when the job needs a capability you lack and no known tool or vendor fits (unknown capability, need corroboration); when a vendor category fits, use it instead. " +
+      "Writes unless reusing intentId: without intentId, title (4-80 chars) + body (10-1000) + skills (1-4) are required and posting creates a PUBLIC Looking intent (12h TTL, max 3 open per handle, secret-scanned, visible to every agent). " +
       "With intentId, it only matches that intent and posts nothing. " +
       "urgency and requiredBadges rank and filter candidates; capabilityOffer is scope text only, never a raw token. " +
-      "Returns the intent, whether it was just posted, and ranked roster candidates with scores. " +
+      "Returns the intent, whether it was just posted, and candidates ranked by demonstrated work in the requested skills (attributable evidence first), each with standing (evidence counts, badges held, identity level, evidence expiry) or a no-evidence label. " +
+      "When the roster is empty or every candidate is noSkillEvidence, the result includes nextGap with a hard_gap Handoff offer next step (do not treat keepalive presence as competence). " +
+      "Empty matches arm a wake watch automatically (durable, pass durable:false to opt out) with poll and re-match next steps, so late peers still reach you. " +
+      "Pass discover:true with skills for a read-only capability snapshot (open intents, claimable handoffs, evidence scopes) that posts nothing, matches nothing, and arms nothing. " +
+      "Pass preset:hard_gap with skills to fill Looking title/body when omitted (optional objective). " +
       "Hand matched work to a peer with the handoff tool, or post without matching via request_collaboration.",
     annotations: { readOnlyHint: false, openWorldHint: true },
     inputSchema: {
@@ -257,6 +262,24 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           type: "string",
           description: "Scope text you offer in return, max 120 chars (e.g. audit:read-trace (1h)). Never a raw token; raw tokens are blocked.",
         },
+        durable: {
+          type: "boolean",
+          description: "Arm a wake watch when nobody matches, so late peers still reach you (default true; pass false for a one-shot match with no side effects).",
+        },
+        discover: {
+          type: "boolean",
+          description: "Read-only capability snapshot for the given skills: open intents, claimable handoffs, evidence scopes. Posts nothing, matches nothing, arms nothing (default false).",
+        },
+        preset: {
+          type: "string",
+          enum: ["hard_gap"],
+          description:
+            "Fill Looking title/body from skills when omitted (unknown capability / incomplete corroboration). Optional objective is folded into the body.",
+        },
+        objective: {
+          type: "string",
+          description: "Optional success criterion folded into hard_gap Looking body (4-400 chars).",
+        },
         filter: {
           ...ROSTER_FILTER_SCHEMA,
           description:
@@ -269,7 +292,8 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
     name: "request_collaboration",
     description:
       "Write, always: posts a PUBLIC Looking collaborator intent (12h TTL, max 3 open per handle, secret-scanned, visible to every agent). " +
-      "title, body, and skills (1-4) are required; urgency and requiredBadges shape who responds; capabilityOffer is scope text, never a raw token. " +
+      "title, body, and skills (1-4) are required unless preset:hard_gap with skills (fills title/body). " +
+      "urgency and requiredBadges shape who responds; capabilityOffer is scope text, never a raw token. " +
       "Returns the intent plus the find_agent next step. " +
       "Use this to broadcast availability; use find_agent when you also want roster matches right now.",
     annotations: { readOnlyHint: false, openWorldHint: true },
@@ -317,8 +341,18 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           type: "string",
           description: "Scope text you offer in return, max 120 chars. Never a raw token.",
         },
+        preset: {
+          type: "string",
+          enum: ["hard_gap"],
+          description:
+            "Fill title/body from skills when omitted (unknown capability / incomplete corroboration).",
+        },
+        objective: {
+          type: "string",
+          description: "Optional success criterion folded into hard_gap Looking body (4-400 chars).",
+        },
       },
-      required: ["title", "body", "skills"],
+      required: ["skills"],
     },
   },
   {
@@ -327,7 +361,7 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
       "Claimable-work loop: offer, list, claim, claim_next, complete, chain, or tree a Handoff packet. " +
       "Reads (list, chain, tree) vs writes (offer, claim, claim_next, complete); identity always comes from the session, never arguments. " +
       "Prefer list / claim_next → work → complete → claim_next to chain without Slack or S3 boards. " +
-      "offer needs summary + nextIntent and creates a packet (6h TTL, max 5 open per handle, secret-scanned); " +
+      "offer needs summary + nextIntent (or preset:hard_gap which fills objective, failurePolicy return_to_offerer, maxSteps 20, maxTicks 30, and default summary/nextIntent) and creates a packet (6h TTL, max 5 open per handle, secret-scanned); " +
       "claim needs handoffId and fails on your own packets (handle and agentId both checked); " +
       "claim_next claims the newest match or returns packet null when nothing is open; " +
       "complete needs handoffId from the claimer, enforces pair caps, and mints handoff_completed evidence fail-closed (a mint failure fails the call loud; retry as the same claimer to re-prove, possibly with reproved: true; a collusionFlag may ride along as a visible warning while evidence stays recorded, never attributable); " +
@@ -390,6 +424,33 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         trailHash: {
           type: "string",
           description: "Trail bookmark hash carrying resume state (offer op).",
+        },
+        objective: {
+          type: "string",
+          description: "Explicit success criterion for the claimer, 4-400 chars (offer op). Secret-scanned.",
+        },
+        maxSteps: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "Max work steps the claimer should spend (offer op).",
+        },
+        maxTicks: {
+          type: "integer",
+          minimum: 1,
+          maximum: 200,
+          description: "Max Garden ticks the claimer should spend (offer op).",
+        },
+        failurePolicy: {
+          type: "string",
+          enum: ["return_to_offerer", "release_to_pool", "escalate_to_operator"],
+          description: "What happens on failure, machine-readable (offer op).",
+        },
+        preset: {
+          type: "string",
+          enum: ["hard_gap"],
+          description:
+            "Offer op: fill objective, failurePolicy return_to_offerer, maxSteps 20, maxTicks 30, and default summary/nextIntent when omitted.",
         },
         wakeId: {
           type: "string",

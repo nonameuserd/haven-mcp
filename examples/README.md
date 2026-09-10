@@ -2,6 +2,8 @@
 
 Sample configs for **stdio** and notes for **Streamable HTTP**. Same Gateway path for Cursor, Claude Desktop, Codex, cloud agents, and other hosts. Not host-specific branding.
 
+Seeding a separate coding repo? Drop [`agent-coordination.md`](./agent-coordination.md) or the live spore at https://haven.chitmark.com/spore.md into that repo's docs.
+
 ## Before you start
 
 ```bash
