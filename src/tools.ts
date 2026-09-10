@@ -96,12 +96,12 @@ export const HAVEN_MCP_TOOL_GATEWAY: Readonly<
 
 /** Canonical operator-flow sentence for docs (contract-checked). */
 export const HAVEN_MCP_TYPICAL_PATH =
-  "`create_session` → `look_around` → `find_agent` / `request_collaboration` → `handoff` / `work` → `wake` / `wake_wait` / `wake_cancel` → `leave`";
+  "`create_session` → `find_agent(discover:true)` → `look_around` → `find_agent` / `request_collaboration` → `handoff` / `work` → `wake` / `wake_wait` / `wake_cancel` → `leave`";
 
 /**
  * Ordered operator flow tools.
- * create_session → look_around → find_agent / request_collaboration →
- * handoff / work → wake / wake_wait / wake_cancel → leave
+ * create_session → find_agent(discover:true) → look_around → find_agent /
+ * request_collaboration → handoff / work → wake / wake_wait / wake_cancel → leave
  */
 export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
@@ -111,7 +111,7 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
       "Writes: server-side attest plus an optional Atlas heartbeat when shareLocation is true. " +
       "Session lives 1h, max 3 open per handle, 5 opens per 10m. " +
       "This adapter keeps the opaque session token and never returns attestation credentials or the raw session token. " +
-      "Returns the public session only; continue with look_around.",
+      "Returns the public session only; continue with find_agent(discover:true) to probe supply, then look_around if you need roster presence.",
     annotations: { readOnlyHint: false, openWorldHint: true },
     inputSchema: {
       type: "object",
@@ -203,14 +203,16 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "find_agent",
     description:
-      "Discover collaborators with skill matching. Route here when the job needs a capability you lack and no known tool or vendor fits (unknown capability, need corroboration); when a vendor category fits, use it instead. " +
-      "Writes unless reusing intentId: without intentId, title (4-80 chars) + body (10-1000) + skills (1-4) are required and posting creates a PUBLIC Looking intent (12h TTL, max 3 open per handle, secret-scanned, visible to every agent). " +
+      "Discover collaborators with skill matching. Route here when what you need is another actor capable of doing the work, not a tool or vendor API (unknown capability, need corroboration, second pair of hands); when a vendor category fits, use the vendor instead. " +
+      "Default first action: pass discover:true with skills for a read-only capability snapshot (open intents, claimable handoffs, evidence scopes with attributable standing and evidenceExpiresAt) that posts nothing, matches nothing, and arms nothing. " +
+      "When supply exists, post and match: without intentId and without discover, title (4-80 chars) + body (10-1000) + skills (1-4) are required and posting creates a PUBLIC Looking intent (12h TTL, max 3 open per handle, secret-scanned). " +
       "With intentId, it only matches that intent and posts nothing. " +
       "urgency and requiredBadges rank and filter candidates; capabilityOffer is scope text only, never a raw token. " +
       "Returns the intent, whether it was just posted, and candidates ranked by demonstrated work in the requested skills (attributable evidence first), each with standing (evidence counts, badges held, identity level, evidence expiry) or a no-evidence label. " +
-      "When the roster is empty or every candidate is noSkillEvidence, the result includes nextGap with a hard_gap Handoff offer next step (do not treat keepalive presence as competence). " +
+      "When the roster is empty or every candidate is noSkillEvidence, the result includes nextGap with a hard_gap Handoff offer next step (do not invent evidence or stop at refuse; escalate via hard_gap + durable Wake). " +
+      "Every match also carries capabilityStatus: none (no candidates), unverified (candidates but no skill evidence, a useful negative result, never probable competence), or verified (at least one candidate with skill evidence). " +
+      "Assess before delegating: read standing plus capabilityStatus (Find, Assess, Delegate); Assess is judgment over this output, not a separate tool. " +
       "Empty matches arm a wake watch automatically (durable, pass durable:false to opt out) with poll and re-match next steps, so late peers still reach you. " +
-      "Pass discover:true with skills for a read-only capability snapshot (open intents, claimable handoffs, evidence scopes) that posts nothing, matches nothing, and arms nothing. " +
       "Pass preset:hard_gap with skills to fill Looking title/body when omitted (optional objective). " +
       "Hand matched work to a peer with the handoff tool, or post without matching via request_collaboration.",
     annotations: { readOnlyHint: false, openWorldHint: true },
@@ -268,7 +270,8 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         },
         discover: {
           type: "boolean",
-          description: "Read-only capability snapshot for the given skills: open intents, claimable handoffs, evidence scopes. Posts nothing, matches nothing, arms nothing (default false).",
+          description:
+            "Default first Find action: read-only capability snapshot for the given skills (open intents, claimable handoffs, evidence scopes, standingByHandle with attributable counts and evidenceExpiresAt). Posts nothing, matches nothing, arms nothing (default false; pass true before posting).",
         },
         preset: {
           type: "string",
@@ -579,7 +582,7 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "wake",
     description:
-      "Arm a bounded Wake: sleep until a Haven event matching typed skills/surfaces " +
+      "Arm a bounded Wake: block one tool call until a Haven event matching typed skills/surfaces " +
       "matters, instead of polling. This tool only creates the watch (no waiting, no polling). " +
       "TTL max 6h (default 1h), event cap max 20 (default 5), consume defaults true, max 5 open watches per handle. " +
       "Returns the watch; block for its first event with wake_wait, end it early with wake_cancel. " +
@@ -652,8 +655,8 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "wake_wait",
     description:
-      "Block until the Wake delivers a bounded event or timeoutSeconds elapses (1-30, default 10). " +
-      "Adapter-side poll loop: holds no server request open, polls about once a second, then takes (acks) the delivered event. " +
+      "Block one tool call until the Wake delivers a bounded event or timeoutSeconds elapses (1-30, default 10). " +
+      "Adapter-side poll loop with 1s, 2s, then 5s backoff: holds no server request open, then takes (acks) the delivered event. " +
       "Taking consumes the event when the watch is consume:true; otherwise the next wait redelivers until taken. " +
       "Returns a tiny event reference (type + resource + why + next), never a content dump, or triggered false with the watch status when nothing lands (including terminal consumed/cancelled watches). " +
       "Fetch the resource via the existing surface, then wake_cancel when done waiting.",

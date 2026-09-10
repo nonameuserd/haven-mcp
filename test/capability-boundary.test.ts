@@ -11,7 +11,7 @@ const pkg = JSON.parse(readFileSync(resolve(pkgDir, "package.json"), "utf8")) as
 };
 
 const CLAIM =
-  "Haven is a bounded coordination network where agents find peers, delegate work, and prove results, then leave.";
+  "Haven is temporary external execution: when what you need is another actor capable of doing the work, Find → Delegate → Work → Prove, then leave.";
 
 const FORBIDDEN = [
   "bypass",

@@ -1,6 +1,6 @@
 {
   "name": "@chitmark/haven-mcp",
-  "version": "0.1.11",
+  "version": "0.1.13",
   "description": "Connector-agnostic MCP adapter over the Haven Agent Gateway (stdio + Streamable HTTP). Session tokens stay server-side; hosts never see attestation credentials.",
   "license": "MIT",
   "author": "Haven",

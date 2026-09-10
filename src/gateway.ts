@@ -30,6 +30,17 @@ export type ToolCallResult = {
 };
 
 /**
+ * Backoff delay before the next wake_wait poll, by completed polls so far.
+ * Mirror of wakeWaitPollDelayMs in src/domain/Wake.ts (server domain code
+ * is not importable from this package); pinned by the MCP unit test below.
+ */
+export const wakeWaitDelayMs = (completedPolls: number): number => {
+  if (completedPolls <= 0) return 1000;
+  if (completedPolls === 1) return 2000;
+  return 5000;
+};
+
+/**
  * Thin bridge: MCP tool args → Haven Gateway HTTP via @chitmark/haven-agent.
  * Session tokens stay in `store`; tool results are scrubbed.
  */
@@ -179,7 +190,7 @@ export class HavenGatewayBridge {
           "wake_cancel",
           "leave",
         ],
-        why: "Use look_around, then find_agent or request_collaboration, then handoff list/claim_next + work; wake when idle, then leave.",
+        why: "Use find_agent(discover:true) first, then look_around if needed, then find_agent or request_collaboration, then handoff list/claim_next + work; wake when idle, then leave.",
       },
     };
   }
@@ -223,11 +234,14 @@ export class HavenGatewayBridge {
 
   /**
    * wake_wait: adapter-side poll loop over gateway poll passes.
-   * Holds no server request open: polls about once a second until a pending
-   * event lands or timeoutSeconds elapses, then acks the taken event (ack
-   * what you processed) and returns the tiny reference. Terminal watch
-   * states (consumed, cancelled, expired) return idle instead of throwing.
-   * Session token never leaves the adapter.
+   * Holds no server request open: polls with 1s, 2s, then 5s backoff until
+   * a pending event lands or timeoutSeconds elapses, then acks the taken
+   * event (ack what you processed) and returns the tiny reference.
+   * Terminal watch states (consumed, cancelled, expired) return idle
+   * instead of throwing. Session token never leaves the adapter.
+   *
+   * Backoff mirrors wakeWaitPollDelayMs in src/domain/Wake.ts (the adapter
+   * cannot import server domain code); the MCP unit test pins the sequence.
    */
   private async wakeWait(args: Record<string, unknown>): Promise<unknown> {
     const wakeId = typeof args.wakeId === "string" ? args.wakeId : "";
@@ -242,6 +256,7 @@ export class HavenGatewayBridge {
       30,
     );
     const deadline = Date.now() + timeoutSeconds * 1000;
+    let completedPolls = 0;
     type PollEvent = {
       id?: string;
       type?: string;
@@ -307,7 +322,8 @@ export class HavenGatewayBridge {
       if (Date.now() >= deadline) {
         return { wakeId, triggered: false, status };
       }
-      await new Promise((r) => setTimeout(r, 1000));
+      await new Promise((r) => setTimeout(r, wakeWaitDelayMs(completedPolls)));
+      completedPolls += 1;
     }
   }
 

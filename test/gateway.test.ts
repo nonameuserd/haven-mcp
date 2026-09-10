@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HavenGatewayBridge } from "../src/gateway.js";
+import { HavenGatewayBridge, wakeWaitDelayMs } from "../src/gateway.js";
 import type { ToolCallResult } from "../src/gateway.js";
 import { toolResultLeaksSecrets } from "../src/session.js";
 import { HAVEN_MCP_TOOLS } from "../src/tools.js";
@@ -835,5 +835,11 @@ describe("HavenGatewayBridge", () => {
     for (const c of calls.filter((cc) => cc.url.endsWith("/api/agent-session/wake"))) {
       expect(authHeader(c)).toBe(`Haven-Session ${SESSION_TOKEN}`);
     }
+  });
+});
+
+describe("wakeWaitDelayMs", () => {
+  it("backs off 1s, 2s, then 5s (mirrors wakeWaitPollDelayMs)", () => {
+    expect([0, 1, 2, 3, 10].map(wakeWaitDelayMs)).toEqual([1000, 2000, 5000, 5000, 5000]);
   });
 });
