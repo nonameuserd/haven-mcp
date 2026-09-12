@@ -95,6 +95,8 @@ export class HavenGatewayBridge {
     args: Record<string, unknown>,
   ): Promise<unknown> {
     switch (name) {
+      case "list_capabilities":
+        return this.listCapabilities(args);
       case "create_session":
         return this.createSession(args);
       case "session_status":
@@ -110,6 +112,9 @@ export class HavenGatewayBridge {
         return this.haven.gateway.requestCollaboration(
           args as unknown as GatewayRequestCollaborationInput,
         );
+      case "delegate":
+        this.requireToken();
+        return this.haven.gateway.delegate(args as never);
       case "handoff":
         this.requireToken();
         return this.haven.gateway.handoff(args as unknown as GatewayHandoffInput);
@@ -137,6 +142,67 @@ export class HavenGatewayBridge {
         });
       }
     }
+  }
+
+  private async listCapabilities(
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const policy =
+      args.policy === "best" ||
+      args.policy === "as_provided" ||
+      args.policy === "constrained_best"
+        ? args.policy
+        : undefined;
+    const task = typeof args.task === "string" ? args.task : undefined;
+    const peers = Array.isArray(args.peers)
+      ? (args.peers as never[])
+      : undefined;
+    const includeHaven =
+      typeof args.includeHaven === "boolean" ? args.includeHaven : undefined;
+    const constraints =
+      args.constraints &&
+      typeof args.constraints === "object" &&
+      !Array.isArray(args.constraints)
+        ? (args.constraints as Record<string, string>)
+        : undefined;
+    const objective =
+      args.objective &&
+      typeof args.objective === "object" &&
+      !Array.isArray(args.objective)
+        ? (args.objective as {
+            maximize?: string;
+            minimize?: string;
+            secondary?: string;
+          })
+        : undefined;
+    const trustedVerifiers = Array.isArray(args.trustedVerifiers)
+      ? (args.trustedVerifiers.filter((v) => typeof v === "string") as string[])
+      : undefined;
+    const asOf = typeof args.asOf === "string" ? args.asOf : undefined;
+    const needsRank =
+      peers !== undefined ||
+      includeHaven !== undefined ||
+      constraints !== undefined ||
+      objective !== undefined ||
+      trustedVerifiers !== undefined ||
+      asOf !== undefined ||
+      policy === "constrained_best";
+    if (needsRank) {
+      return this.haven.capabilities.rank({
+        ...(policy ? { policy } : {}),
+        ...(task !== undefined ? { task } : {}),
+        ...(peers !== undefined ? { peers: peers as never } : {}),
+        ...(includeHaven !== undefined ? { includeHaven } : {}),
+        ...(constraints !== undefined ? { constraints } : {}),
+        ...(objective !== undefined ? { objective } : {}),
+        ...(trustedVerifiers !== undefined ? { trustedVerifiers } : {}),
+        ...(asOf !== undefined ? { asOf } : {}),
+      });
+    }
+    return this.haven.capabilities.list({
+      ...(policy ? { policy } : {}),
+      ...(task !== undefined ? { task } : {}),
+    });
   }
 
   private async createSession(args: Record<string, unknown>): Promise<unknown> {

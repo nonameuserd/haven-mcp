@@ -64,11 +64,13 @@ describe("HAVEN_MCP_TOOLS", () => {
   it("covers the operator flow without attestation tools", () => {
     const names = HAVEN_MCP_TOOLS.map((t) => t.name);
     expect(names).toEqual([
+      "list_capabilities",
       "create_session",
       "session_status",
       "look_around",
       "find_agent",
       "request_collaboration",
+      "delegate",
       "handoff",
       "work",
       "wake",
@@ -90,9 +92,77 @@ describe("HAVEN_MCP_TOOLS", () => {
     expect(desc).toContain("sharelocation");
     expect(desc).toMatch(/omit.*location|all required|opt-in/);
   });
+
+  it("delegate tool requires skills, summary, and nextIntent", () => {
+    const tool = HAVEN_MCP_TOOLS.find((t) => t.name === "delegate");
+    expect(tool).toBeTruthy();
+    expect(tool!.inputSchema.required).toEqual(
+      expect.arrayContaining(["skills", "summary", "nextIntent"]),
+    );
+  });
 });
 
 describe("HavenGatewayBridge", () => {
+  it("delegate posts Looking+offer via gateway path and scrubs secrets", async () => {
+    const { fetchImpl, calls } = mockFetch((call) => {
+      if (call.url.endsWith("/api/agent-session") && call.init?.method === "POST") {
+        return jsonResponse(200, {
+          sessionId: "sess_delegate",
+          sessionToken: SESSION_TOKEN,
+          handle: "mcp-delegate",
+          agentId: "agt_delegate",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          actions: ["delegate", "work", "handoff", "leave"],
+          delivery: "header",
+          signature: "should_never_reach_tools",
+        });
+      }
+      if (call.url.endsWith("/api/agent-session/delegate")) {
+        return jsonResponse(
+          200,
+          withLeaks({
+            action: "delegate",
+            friction: "collapsed",
+            intent: { id: "look_d1", handle: "mcp-delegate", skills: ["coding"] },
+            packet: {
+              id: "hnd_d1",
+              lookingId: "look_d1",
+              summary: "Review the yield summary",
+              nextIntent: "Return a short note",
+              status: "open",
+            },
+            next: { tools: ["work", "handoff", "wake", "leave"] },
+          }),
+        );
+      }
+      return jsonResponse(404, { error: "NotFound", message: call.url });
+    });
+
+    const bridge = new HavenGatewayBridge({
+      baseUrl: "https://haven.test",
+      fetch: fetchImpl,
+    });
+    await bridge.call("create_session", { handle: "mcp-delegate" });
+    const result = await bridge.call("delegate", {
+      skills: ["coding"],
+      summary: "Review the yield summary with enough length",
+      nextIntent: "Return a short note",
+    });
+    assertScrubbed(result, "delegate");
+    expect((result.content as { action: string }).action).toBe("delegate");
+    expect((result.content as { friction: string }).friction).toBe("collapsed");
+    expect(
+      (result.content as { packet: { lookingId: string } }).packet.lookingId,
+    ).toBe("look_d1");
+
+    const delegateCall = calls.find((c) =>
+      c.url.endsWith("/api/agent-session/delegate"),
+    );
+    expect(delegateCall).toBeTruthy();
+    expect(authHeader(delegateCall)).toMatch(/^Haven-Session /);
+    expect(parseBody(delegateCall).skills).toEqual(["coding"]);
+  });
+
   it("create_session stores token server-side and never returns it", async () => {
     const { fetchImpl, calls } = mockFetch((call) => {
       if (call.url.endsWith("/api/agent-session") && call.init?.method === "POST") {

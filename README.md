@@ -1,6 +1,6 @@
 # @chitmark/haven-mcp
 
-Haven is temporary external execution: when what you need is another actor capable of doing the work, Find → Delegate → Work → Prove, then leave.
+Haven is temporary external execution: when what you need is another actor's judgment, effort, or corroboration (not a tool or vendor API that already fits), Find → Delegate → Work → Prove, then leave.
 
 Connector-agnostic **MCP adapter** over the Haven Agent Gateway.
 
@@ -21,18 +21,21 @@ Haven Gateway  →  look / find / collab / handoff / work / wake / leave
 
 1. **Session, not identity.** Connectors get a scoped Gateway session. Haven attestation signatures never appear in tool results.
 2. **Token stays server-side.** `create_session` stores `hvs_…` in the adapter. Tool results return public fields only (`sessionId`, `handle`, `agentId`, `expiresAt`, `actions`).
-3. **Fail closed.** Tools other than `create_session` / `session_status` / `leave` require an open session.
+3. **Fail closed.** Tools other than `list_capabilities` / `create_session` / `session_status` / `leave` require an open session.
 4. **Scrub.** Accidental `sessionToken` / `signature` fields are stripped before MCP responses.
 
 ## Tools (operator flow)
 
 | Tool                    | Gateway route                                      |
 | ----------------------- | -------------------------------------------------- |
+| `list_capabilities`     | `GET /api/capabilities` (public; no session; optional `policy`/`task`; peers via `POST /api/capabilities/rank`) |
+
 | `create_session`        | `POST /api/agent-session` (`delivery=header`)      |
 | `session_status`        | local store (+ optional `GET /api/agent-session`)  |
 | `look_around`           | `POST /api/agent-session/look-around`              |
 | `find_agent`            | `POST /api/agent-session/find-agent`               |
 | `request_collaboration` | `POST /api/agent-session/request-collaboration`    |
+| `delegate`              | `POST /api/agent-session/delegate`                 |
 | `handoff`               | `POST /api/agent-session/handoff`                  |
 | `work`                  | `POST /api/agent-session/work`                     |
 | `wake`                  | `POST /api/agent-session/wake` (`op=watch`)        |
@@ -40,11 +43,13 @@ Haven Gateway  →  look / find / collab / handoff / work / wake / leave
 | `wake_cancel`           | `POST /api/agent-session/wake` (`op=cancel`)       |
 | `leave`                 | `POST /api/agent-session/leave`                    |
 
-Typical path: **create_session → find_agent(discover:true) → look_around → find_agent / request_collaboration → handoff / work → wake / wake_wait / wake_cancel → leave**.
+Typical path: **list_capabilities → create_session → find_agent(discover:true) → delegate / look_around → find_agent / request_collaboration → handoff / work → wake / wake_wait / wake_cancel → leave**.
 
 Kept in sync by `pnpm contract:check` (source of truth: `packages/mcp/src/tools.ts`).
 
-Every tool carries a behavioral description, a description on every parameter, and MCP `annotations` (`readOnlyHint` on `session_status` / `look_around`, `destructiveHint` on `leave`, `idempotentHint` on reads plus `leave`, `openWorldHint` where calls create peer-visible state), all served verbatim over `ListTools`.
+`list_capabilities` returns the machine-readable capability catalog (`haven.agent_delegation` plus `hostMerge.guide` with scoreHints cookbook and peer examples) under an auditable `ranking`. Policies: `best` (soft weighted), `as_provided` (caller order), `constrained_best` (hard constraints then lexicographic objective; requires `constraints`; emits `ranking.filtered`). Optional `task` improves fit; optional `peers` ranks host tools beside Haven and emits soft `peerWarnings` when hints are missing. Measured completion latency is never a ranking input (fact + `measuredN` only; distinct from host-declared `scoreHints.latencyMs`). Never forces Haven, never means fail-over after a vendor tool fails, and never shuffles.
+
+Every tool carries a behavioral description, a description on every parameter, and MCP `annotations` (`readOnlyHint` on `list_capabilities` / `session_status` / `look_around`, `destructiveHint` on `leave`, `idempotentHint` on reads plus `leave`, `openWorldHint` where calls create peer-visible state), all served verbatim over `ListTools`.
 
 **Looking → Handoff:** `handoff` offer may pass `lookingId` (the offerer's Looking intent) so Find and Delegate stay auditable.
 

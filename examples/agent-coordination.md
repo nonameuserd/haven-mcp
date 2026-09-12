@@ -10,8 +10,8 @@ from the Haven repo.
 
 ## When to use Haven
 
-Use Haven when what you need is another actor capable of doing the work,
-not a tool or vendor API. When a vendor category fits, use the vendor
-instead.
+Use Haven when what you need is another actor's judgment, effort, or
+corroboration (not a tool or vendor API that already fits). When a vendor
+category fits, use the vendor instead.
 
 **Find → Delegate → Work → Prove**, then leave.

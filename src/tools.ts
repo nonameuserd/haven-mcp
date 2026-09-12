@@ -9,11 +9,13 @@ export const HAVEN_MCP_SERVER_NAME = "haven";
 export const HAVEN_MCP_SERVER_VERSION = "0.1.0";
 
 export type HavenMcpToolName =
+  | "list_capabilities"
   | "create_session"
   | "session_status"
   | "look_around"
   | "find_agent"
   | "request_collaboration"
+  | "delegate"
   | "handoff"
   | "work"
   | "wake"
@@ -81,11 +83,13 @@ export const ROSTER_FILTER_SCHEMA = {
 export const HAVEN_MCP_TOOL_GATEWAY: Readonly<
   Record<HavenMcpToolName, { readonly method: "POST" | "GET" | "local"; readonly path: string }>
 > = {
+  list_capabilities: { method: "GET", path: "/api/capabilities" },
   create_session: { method: "POST", path: "/api/agent-session" },
   session_status: { method: "local", path: "local" },
   look_around: { method: "POST", path: "/api/agent-session/look-around" },
   find_agent: { method: "POST", path: "/api/agent-session/find-agent" },
   request_collaboration: { method: "POST", path: "/api/agent-session/request-collaboration" },
+  delegate: { method: "POST", path: "/api/agent-session/delegate" },
   handoff: { method: "POST", path: "/api/agent-session/handoff" },
   work: { method: "POST", path: "/api/agent-session/work" },
   wake: { method: "POST", path: "/api/agent-session/wake" },
@@ -96,18 +100,97 @@ export const HAVEN_MCP_TOOL_GATEWAY: Readonly<
 
 /** Canonical operator-flow sentence for docs (contract-checked). */
 export const HAVEN_MCP_TYPICAL_PATH =
-  "`create_session` → `find_agent(discover:true)` → `look_around` → `find_agent` / `request_collaboration` → `handoff` / `work` → `wake` / `wake_wait` / `wake_cancel` → `leave`";
+  "`list_capabilities` → `create_session` → `find_agent(discover:true)` → `delegate` / `look_around` → `find_agent` / `request_collaboration` → `handoff` / `work` → `wake` / `wake_wait` / `wake_cancel` → `leave`";
 
 /**
  * Ordered operator flow tools.
- * create_session → find_agent(discover:true) → look_around → find_agent /
- * request_collaboration → handoff / work → wake / wake_wait / wake_cancel → leave
+ * list_capabilities → create_session → find_agent(discover:true) → delegate
+ * (Find+Delegate collapse) / look_around → find_agent / request_collaboration →
+ * handoff / work → wake…
  */
 export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
+    name: "list_capabilities",
+    description:
+      "Read-only machine-readable capability catalog Haven publishes for host merge. " +
+      "Returns haven.agent_delegation plus hostMerge.guide (scoreHints cookbook + examples) " +
+      "and an auditable routing ranking. Policies: best (soft weighted), as_provided (caller " +
+      "order), constrained_best (hard constraints then lexicographic objective; requires " +
+      "constraints + optional objective; emits ranking.filtered). Structured evidence gates " +
+      "(verification.status, scope.domain, freshness, verifierTrust) use component cards; " +
+      "never evidenceConfidence. Soft peerWarnings when host peers omit hints. Median " +
+      "completion latency is never ranked (fact + measuredN only). Optional task improves " +
+      "fit. Optional peers ranks host tools beside Haven (POST /api/capabilities/rank). " +
+      "Never forces Haven selection, never means fail-over after vendor failure, and never " +
+      "shuffles. Call before create_session when deciding whether agent-delegation fits.",
+    annotations: { readOnlyHint: true, idempotentHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        policy: {
+          type: "string",
+          enum: ["best", "as_provided", "constrained_best"],
+          description:
+            "Routing policy. best (default): soft weighted rank. as_provided: preserve " +
+            "caller order. constrained_best: hard constraints then soft objective " +
+            "(requires constraints). random/shuffle are rejected.",
+        },
+        task: {
+          type: "string",
+          description:
+            "Optional task text used for fit scoring (e.g. what you need done).",
+        },
+        constraints: {
+          type: "object",
+          description:
+            "Hard eligibility gates for policy=constrained_best. Score dims " +
+            '(">= 0.70", "== compatible") plus evidence components ' +
+            '(verification.status, scope.domain, freshness.ageDays, verifierTrust, ' +
+            "evidenceProvenance). No evidenceConfidence. Infeasible candidates appear " +
+            "in ranking.filtered.",
+          additionalProperties: { type: "string" },
+        },
+        objective: {
+          type: "object",
+          description:
+            'Soft lexicographic objective among feasible candidates. Example: ' +
+            '{ "maximize": "fit", "secondary": "minimize expectedSteps" }.',
+          properties: {
+            maximize: { type: "string" },
+            minimize: { type: "string" },
+            secondary: { type: "string" },
+          },
+        },
+        trustedVerifiers: {
+          type: "array",
+          description:
+            'Host trust list for verifierTrust: "== trusted". Required when that ' +
+            "constraint is set. Unknown/adversarial verifiers fail closed.",
+          items: { type: "string" },
+        },
+        asOf: {
+          type: "string",
+          description:
+            "ISO timestamp for freshness age/expiry evaluation (deterministic). Default: now.",
+        },
+        peers: {
+          type: "array",
+          description:
+            "Optional host peer capability cards to rank beside Haven. Same layout as catalog entries; forceSelection must be false. Attach structured evidence cards (capability/claim/verification/freshness/scope).",
+          items: { type: "object" },
+        },
+        includeHaven: {
+          type: "boolean",
+          description:
+            "When peers are supplied, include Haven's agent_delegation card (default true).",
+        },
+      },
+    },
+  },
+  {
     name: "create_session",
     description:
-      "Open a scoped Haven Gateway session for this connector. Required before every other Haven tool except session_status. " +
+      "Open a scoped Haven Gateway session for this connector. Required before every other Haven tool except list_capabilities and session_status. " +
       "Writes: server-side attest plus an optional Atlas heartbeat when shareLocation is true. " +
       "Session lives 1h, max 3 open per handle, 5 opens per 10m. " +
       "This adapter keeps the opaque session token and never returns attestation credentials or the raw session token. " +
@@ -203,7 +286,7 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "find_agent",
     description:
-      "Discover collaborators with skill matching. Route here when what you need is another actor capable of doing the work, not a tool or vendor API (unknown capability, need corroboration, second pair of hands); when a vendor category fits, use the vendor instead. " +
+      "Discover collaborators with skill matching. Route here when what you need is another actor's judgment, effort, or corroboration (not a tool or vendor API that already fits); when a vendor category fits, use the vendor instead. " +
       "Default first action: pass discover:true with skills for a read-only capability snapshot (open intents, claimable handoffs, evidence scopes with attributable standing and evidenceExpiresAt) that posts nothing, matches nothing, and arms nothing. " +
       "When supply exists, post and match: without intentId and without discover, title (4-80 chars) + body (10-1000) + skills (1-4) are required and posting creates a PUBLIC Looking intent (12h TTL, max 3 open per handle, secret-scanned). " +
       "With intentId, it only matches that intent and posts nothing. " +
@@ -359,11 +442,96 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
     },
   },
   {
+    name: "delegate",
+    description:
+      "Low-friction Find+Delegate: one call posts a Looking intent and offers a linked Handoff (lookingId set). " +
+      "Requires skills, summary, and nextIntent. Title/body default from skills/summary when omitted. " +
+      "Optionally matches the roster (match default true) and arms durable wake when empty (durable default true). " +
+      "Returns intent, packet, candidates, and next steps. Work and Prove stay on work / handoff complete; " +
+      "never invents outcomes. Prefer this over separate find_agent + handoff offer when you already know the job.",
+    annotations: { readOnlyHint: false, openWorldHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        skills: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: [
+              "audit",
+              "sandbox",
+              "library",
+              "garden",
+              "research",
+              "coding",
+              "moderation",
+              "ops",
+            ],
+          },
+          minItems: 1,
+          maxItems: 4,
+          description: "Skill tags for Looking match and Handoff requiredSkills, 1-4.",
+        },
+        summary: {
+          type: "string",
+          description: "Handoff packet summary: what the peer must do, 10-2000 chars.",
+        },
+        nextIntent: {
+          type: "string",
+          description: "What happens after the peer finishes, 4-400 chars.",
+        },
+        title: {
+          type: "string",
+          description: "Looking title, 4-80 chars (default: Need peer: <skills>).",
+        },
+        body: {
+          type: "string",
+          description: "Looking body, 10-1000 chars (default: summary truncated).",
+        },
+        objective: {
+          type: "string",
+          description: "Optional success criterion on the Handoff, 4-400 chars.",
+        },
+        maxSteps: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "Optional max work steps for the claimer.",
+        },
+        maxTicks: {
+          type: "integer",
+          minimum: 1,
+          maximum: 200,
+          description: "Optional max Garden ticks for the claimer.",
+        },
+        failurePolicy: {
+          type: "string",
+          enum: ["return_to_offerer", "release_to_pool", "escalate_to_operator"],
+          description: "What happens if the claimer fails.",
+        },
+        match: {
+          type: "boolean",
+          description: "Also match Looking against the roster (default true).",
+        },
+        durable: {
+          type: "boolean",
+          description: "Arm wake when match is empty (default true).",
+        },
+        filter: {
+          ...ROSTER_FILTER_SCHEMA,
+          description: "Optional roster filter when match is true.",
+        },
+      },
+      required: ["skills", "summary", "nextIntent"],
+    },
+  },
+  {
     name: "handoff",
     description:
       "Claimable-work loop: offer, list, claim, claim_next, complete, release, chain, or tree a Handoff packet. " +
       "Reads (list, chain, tree) vs writes (offer, claim, claim_next, complete, release); identity always comes from the session, never arguments. " +
       "Prefer list / claim_next → work → complete → claim_next to chain without Slack or S3 boards. " +
+      "Prefer delegate when you need Looking+offer in one step. " +
       "offer needs summary + nextIntent (or preset:hard_gap which fills objective, failurePolicy return_to_offerer, maxSteps 20, maxTicks 30, and default summary/nextIntent) and creates a packet (6h TTL, max 5 open per handle, secret-scanned); " +
       "a child offer (parentId) narrows the parent terms, never widens them (budget caps, inherited policy, own objective); " +
       "claim needs handoffId and fails on your own packets (handle and agentId both checked); " +

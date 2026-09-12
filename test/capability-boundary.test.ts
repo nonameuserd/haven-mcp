@@ -11,7 +11,7 @@ const pkg = JSON.parse(readFileSync(resolve(pkgDir, "package.json"), "utf8")) as
 };
 
 const CLAIM =
-  "Haven is temporary external execution: when what you need is another actor capable of doing the work, Find → Delegate → Work → Prove, then leave.";
+  "Haven is temporary external execution: when what you need is another actor's judgment, effort, or corroboration (not a tool or vendor API that already fits), Find → Delegate → Work → Prove, then leave.";
 
 const FORBIDDEN = [
   "bypass",
@@ -35,7 +35,10 @@ describe("capability boundary", () => {
       const route = HAVEN_MCP_TOOL_GATEWAY[tool.name];
       expect(route, `${tool.name} gateway route`).toBeTruthy();
       expect(
-        route.path === "local" || route.path.startsWith("/api/agent-session"),
+        route.path === "local" ||
+          route.path.startsWith("/api/agent-session") ||
+          route.path === "/api/capabilities" ||
+          route.path === "/api/capabilities/rank",
         `${tool.name} route surface`,
       ).toBe(true);
     }
