@@ -1,4 +1,11 @@
 {
   "$schema": "https://glama.ai/mcp/schemas/server.json",
-  "maintainers": ["nonameuserd"]
+  "maintainers": ["nonameuserd"],
+  "relatedServers": [
+    "https://glama.ai/mcp/servers/SarutobiSasuke8/agent-handoff-mcp",
+    "https://glama.ai/mcp/servers/AiAgentKarl/agent-coordination-mcp-server",
+    "https://glama.ai/mcp/servers/LevDomasnih/coordinaut",
+    "https://glama.ai/mcp/servers/@agent-room-alkl/agent-room-mcp",
+    "https://glama.ai/mcp/servers/@agree-able/room-mcp"
+  ]
 }
