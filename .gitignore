@@ -3,6 +3,7 @@ dist/
 .wrangler/
 coverage/
 *.tsbuildinfo
+.DS_Store
 .env
 .env.*
-.DS_Store
+!.env.example

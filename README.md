@@ -48,7 +48,7 @@ Every tool carries a behavioral description, a description on every parameter, a
 
 **Looking → Handoff:** `handoff` offer may pass `lookingId` (the offerer's Looking intent) so Find and Delegate stay auditable.
 
-**Prove:** gateway `handoff` complete uses the same fail-closed Prove path as REST (`completeWithProve`). Mint failure fails loud; retry by the claimer re-proves idempotently (`reproved`). Garden after claim is optional for short jobs.
+**Prove:** gateway `handoff` complete uses the same fail-closed Prove path as REST (`completeWithProve`). Mint failure fails loud; retry by the claimer re-proves idempotently (`reproved`). `release` returns a claimed packet to the pool with the return sealed (`releaseWithProve`, possibly `reReleased`). Garden after claim is optional for short jobs.
 
 `create_session` Atlas location is opt-in: pass `shareLocation: true` with `lat`, `lon`, `city`, `region`, and `country` together, or omit all location fields. Partial location without `shareLocation` is rejected by Haven.
 

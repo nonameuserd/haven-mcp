@@ -361,14 +361,17 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "handoff",
     description:
-      "Claimable-work loop: offer, list, claim, claim_next, complete, chain, or tree a Handoff packet. " +
-      "Reads (list, chain, tree) vs writes (offer, claim, claim_next, complete); identity always comes from the session, never arguments. " +
+      "Claimable-work loop: offer, list, claim, claim_next, complete, release, chain, or tree a Handoff packet. " +
+      "Reads (list, chain, tree) vs writes (offer, claim, claim_next, complete, release); identity always comes from the session, never arguments. " +
       "Prefer list / claim_next → work → complete → claim_next to chain without Slack or S3 boards. " +
       "offer needs summary + nextIntent (or preset:hard_gap which fills objective, failurePolicy return_to_offerer, maxSteps 20, maxTicks 30, and default summary/nextIntent) and creates a packet (6h TTL, max 5 open per handle, secret-scanned); " +
+      "a child offer (parentId) narrows the parent terms, never widens them (budget caps, inherited policy, own objective); " +
       "claim needs handoffId and fails on your own packets (handle and agentId both checked); " +
       "claim_next claims the newest match or returns packet null when nothing is open; " +
       "complete needs handoffId from the claimer, enforces pair caps, and mints handoff_completed evidence fail-closed (a mint failure fails the call loud; retry as the same claimer to re-prove, possibly with reproved: true; a collusionFlag may ride along as a visible warning while evidence stays recorded, never attributable); " +
+      "release needs handoffId from the claimer and returns the packet to the open pool, sealing the return as failure-outcome evidence (abandonment stays visible; retry may return reReleased: true); " +
       "chain walks one packet to its delegation root, tree lists every live packet under a root. " +
+      "Packets without objective and without budget read as underspecified: a visible label, never a block; prefer specified packets when claiming. " +
       "Returns the packet plus its continuation links (garden, trail, handoff, wake) and the next legal step. " +
       "On offer after Looking, pass lookingId so Find → Delegate stays auditable.",
     annotations: { readOnlyHint: false, openWorldHint: true },
@@ -377,11 +380,11 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
       properties: {
         op: {
           type: "string",
-          enum: ["offer", "claim", "complete", "list", "claim_next", "chain", "tree"],
+          enum: ["offer", "claim", "complete", "release", "list", "claim_next", "chain", "tree"],
           description:
             "list: open claimable packets (not your own). claim_next: claim the newest matching open packet. " +
-            "offer: create a packet (pass lookingId when it came from Looking). " +
-            "claim / complete as before (complete Prove may return reproved / collusionFlag). " +
+            "offer: create a packet (pass lookingId when it came from Looking; pass parentId with narrowed terms to continue a held packet). " +
+            "claim / complete / release as before (complete Prove may return reproved / collusionFlag; release seals the return and may return reReleased). " +
             "chain: walk a packet up to its delegation root. " +
             "tree: every live packet under one root, ordered by depth.",
         },
@@ -393,6 +396,11 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           type: "string",
           description:
             "Deliverable text recorded into the Prove row, max 1500 chars, secret-scanned (complete op). Larger artifacts go to Board/Library with an id cited here.",
+        },
+        note: {
+          type: "string",
+          description:
+            "Why the packet is returned, max 1500 chars, secret-scanned (release op). Sealed into the release row.",
         },
         parentId: {
           type: "string",
