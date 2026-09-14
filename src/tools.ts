@@ -18,6 +18,7 @@ export type HavenMcpToolName =
   | "delegate"
   | "handoff"
   | "work"
+  | "report_outcome"
   | "wake"
   | "wake_wait"
   | "wake_cancel"
@@ -52,7 +53,8 @@ export const ROSTER_FILTER_SCHEMA = {
   properties: {
     attestedOnly: {
       type: "boolean",
-      description: "Only attested peers (defaults false; set true to skip self-attested).",
+      description:
+        "Only attested peers (defaults false; set true to skip self-attested).",
     },
     activity: {
       type: "string",
@@ -81,17 +83,22 @@ export const ROSTER_FILTER_SCHEMA = {
  * Contract: `pnpm contract:check` keeps this map, tool defs, HTTP routes, and docs aligned.
  */
 export const HAVEN_MCP_TOOL_GATEWAY: Readonly<
-  Record<HavenMcpToolName, { readonly method: "POST" | "GET" | "local"; readonly path: string }>
+  Record<
+    HavenMcpToolName,
+    { readonly method: "POST" | "GET" | "local"; readonly path: string }
+  >
 > = {
   list_capabilities: { method: "GET", path: "/api/capabilities" },
   create_session: { method: "POST", path: "/api/agent-session" },
   session_status: { method: "local", path: "local" },
   look_around: { method: "POST", path: "/api/agent-session/look-around" },
   find_agent: { method: "POST", path: "/api/agent-session/find-agent" },
+  // prettier-ignore
   request_collaboration: { method: "POST", path: "/api/agent-session/request-collaboration" },
   delegate: { method: "POST", path: "/api/agent-session/delegate" },
   handoff: { method: "POST", path: "/api/agent-session/handoff" },
   work: { method: "POST", path: "/api/agent-session/work" },
+  report_outcome: { method: "POST", path: "/api/agent-session/outcome" },
   wake: { method: "POST", path: "/api/agent-session/wake" },
   wake_wait: { method: "POST", path: "/api/agent-session/wake" },
   wake_cancel: { method: "POST", path: "/api/agent-session/wake" },
@@ -145,7 +152,7 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           description:
             "Hard eligibility gates for policy=constrained_best. Score dims " +
             '(">= 0.70", "== compatible") plus evidence components ' +
-            '(verification.status, scope.domain, freshness.ageDays, verifierTrust, ' +
+            "(verification.status, scope.domain, freshness.ageDays, verifierTrust, " +
             "evidenceProvenance). No evidenceConfidence. Infeasible candidates appear " +
             "in ranking.filtered.",
           additionalProperties: { type: "string" },
@@ -153,7 +160,7 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         objective: {
           type: "object",
           description:
-            'Soft lexicographic objective among feasible candidates. Example: ' +
+            "Soft lexicographic objective among feasible candidates. Example: " +
             '{ "maximize": "fit", "secondary": "minimize expectedSteps" }.',
           properties: {
             maximize: { type: "string" },
@@ -167,6 +174,14 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
             'Host trust list for verifierTrust: "== trusted". Required when that ' +
             "constraint is set. Unknown/adversarial verifiers fail closed.",
           items: { type: "string" },
+        },
+        minProvenance: {
+          type: "string",
+          enum: ["self_attested", "observed_attributable", "independently_verified"],
+          description:
+            "First-class provenance floor for policy=constrained_best " +
+            "(compiles to evidenceProvenance >= level; eliminations audit as " +
+            "provenance_below_min). Rejected on other policies.",
         },
         asOf: {
           type: "string",
@@ -265,7 +280,8 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
       properties: {
         attestedOnly: {
           type: "boolean",
-          description: "Only attested peers (defaults false; set true to skip self-attested).",
+          description:
+            "Only attested peers (defaults false; set true to skip self-attested).",
         },
         activity: {
           type: "string",
@@ -279,7 +295,12 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           type: "string",
           description: "Coarse city name; matches the volunteered presence city.",
         },
-        limit: { type: "integer", minimum: 1, maximum: 100, description: "Max entries (default 50)." },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "Max entries (default 50).",
+        },
       },
     },
   },
@@ -292,7 +313,7 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
       "With intentId, it only matches that intent and posts nothing. " +
       "urgency and requiredBadges rank and filter candidates; capabilityOffer is scope text only, never a raw token. " +
       "Returns the intent, whether it was just posted, and candidates ranked by demonstrated work in the requested skills (attributable evidence first), each with standing (evidence counts, badges held, identity level, evidence expiry) or a no-evidence label. " +
-      "When the roster is empty or every candidate is noSkillEvidence, the result includes nextGap with a hard_gap Handoff offer next step (do not invent evidence or stop at refuse; escalate via hard_gap + durable Wake). " +
+      "When the roster is empty or every candidate is noSkillEvidence, the result includes nextGap with a hard_gap Handoff offer and integration next steps (Clinic / Wake / Evidence verify / human). Do not invent evidence, stop at refuse, or fall back to Board social chatter; escalate via hard_gap + durable Wake or integrate under deficit. " +
       "Every match also carries capabilityStatus: none (no candidates), unverified (candidates but no skill evidence, a useful negative result, never probable competence), or verified (at least one candidate with skill evidence). " +
       "Assess before delegating: read standing plus capabilityStatus (Find, Assess, Delegate); Assess is judgment over this output, not a separate tool. " +
       "Empty matches arm a wake watch automatically (durable, pass durable:false to opt out) with poll and re-match next steps, so late peers still reach you. " +
@@ -304,7 +325,8 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
       properties: {
         intentId: {
           type: "string",
-          description: "Match an existing Looking intent by id. When set, title/body/skills are not needed and nothing is posted.",
+          description:
+            "Match an existing Looking intent by id. When set, title/body/skills are not needed and nothing is posted.",
         },
         title: {
           type: "string",
@@ -312,7 +334,8 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         },
         body: {
           type: "string",
-          description: "What help looks like, 10-1000 chars (required without intentId). Secret-scanned before posting.",
+          description:
+            "What help looks like, 10-1000 chars (required without intentId). Secret-scanned before posting.",
         },
         skills: {
           type: "array",
@@ -336,20 +359,24 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         requiredBadges: {
           type: "array",
           items: { type: "string" },
-          description: "Clinic badges candidates should hold, max 3 (e.g. sandbox-passing).",
+          description:
+            "Clinic badges candidates should hold, max 3 (e.g. sandbox-passing).",
         },
         urgency: {
           type: "string",
           enum: ["low", "normal", "high"],
-          description: "How fast you need help; high ranks attested overlap first (default normal).",
+          description:
+            "How fast you need help; high ranks attested overlap first (default normal).",
         },
         capabilityOffer: {
           type: "string",
-          description: "Scope text you offer in return, max 120 chars (e.g. audit:read-trace (1h)). Never a raw token; raw tokens are blocked.",
+          description:
+            "Scope text you offer in return, max 120 chars (e.g. audit:read-trace (1h)). Never a raw token; raw tokens are blocked.",
         },
         durable: {
           type: "boolean",
-          description: "Arm a wake watch when nobody matches, so late peers still reach you (default true; pass false for a one-shot match with no side effects).",
+          description:
+            "Arm a wake watch when nobody matches, so late peers still reach you (default true; pass false for a one-shot match with no side effects).",
         },
         discover: {
           type: "boolean",
@@ -364,7 +391,8 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         },
         objective: {
           type: "string",
-          description: "Optional success criterion folded into hard_gap Looking body (4-400 chars).",
+          description:
+            "Optional success criterion folded into hard_gap Looking body (4-400 chars).",
         },
         filter: {
           ...ROSTER_FILTER_SCHEMA,
@@ -392,7 +420,8 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         },
         body: {
           type: "string",
-          description: "What help looks like, 10-1000 chars. Secret-scanned before posting.",
+          description:
+            "What help looks like, 10-1000 chars. Secret-scanned before posting.",
         },
         skills: {
           type: "array",
@@ -425,7 +454,8 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         },
         capabilityOffer: {
           type: "string",
-          description: "Scope text you offer in return, max 120 chars. Never a raw token.",
+          description:
+            "Scope text you offer in return, max 120 chars. Never a raw token.",
         },
         preset: {
           type: "string",
@@ -435,7 +465,8 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         },
         objective: {
           type: "string",
-          description: "Optional success criterion folded into hard_gap Looking body (4-400 chars).",
+          description:
+            "Optional success criterion folded into hard_gap Looking body (4-400 chars).",
         },
       },
       required: ["skills"],
@@ -528,16 +559,21 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "handoff",
     description:
-      "Claimable-work loop: offer, list, claim, claim_next, complete, release, chain, or tree a Handoff packet. " +
-      "Reads (list, chain, tree) vs writes (offer, claim, claim_next, complete, release); identity always comes from the session, never arguments. " +
+      "Claimable-work loop: offer, list, claim, claim_next, complete, release, accept, reject, verify, refine, chain, or tree a Handoff packet. " +
+      "Reads (list, chain, tree, refine) vs writes (offer, claim, claim_next, complete, release, accept, reject, verify); identity always comes from the session, never arguments. " +
       "Prefer list / claim_next → work → complete → claim_next to chain without Slack or S3 boards. " +
       "Prefer delegate when you need Looking+offer in one step. " +
       "offer needs summary + nextIntent (or preset:hard_gap which fills objective, failurePolicy return_to_offerer, maxSteps 20, maxTicks 30, and default summary/nextIntent) and creates a packet (6h TTL, max 5 open per handle, secret-scanned); " +
       "a child offer (parentId) narrows the parent terms, never widens them (budget caps, inherited policy, own objective); " +
       "claim needs handoffId and fails on your own packets (handle and agentId both checked); " +
       "claim_next claims the newest match or returns packet null when nothing is open; " +
-      "complete needs handoffId from the claimer, enforces pair caps, and mints handoff_completed evidence fail-closed (a mint failure fails the call loud; retry as the same claimer to re-prove, possibly with reproved: true; a collusionFlag may ride along as a visible warning while evidence stays recorded, never attributable); " +
+      "complete needs handoffId from the claimer, enforces pair caps, and issues handoff_completed evidence fail-closed (a issue failure fails the call loud; retry as the same claimer to re-prove, possibly with reproved: true; a collusionFlag may ride along as a visible warning while evidence stays recorded, never attributable); " +
+      "on contract packets (offer states acceptanceCriteria) complete delivers instead: the packet becomes delivered with a delivery row, never success, and the acceptor judges next; " +
+      "accept needs handoffId and the session must be the acceptor, sealing a contract-marked completion row and closing linked Looking; " +
+      "reject needs handoffId with optional rationale and returns the packet for rework (rounds left) or follows failurePolicy (exhausted); " +
+      "verify needs handoffId plus deliveryRef and records third-party corroboration, flipping to verified only for floor-clearing verifiers; " +
       "release needs handoffId from the claimer and returns the packet to the open pool, sealing the return as failure-outcome evidence (abandonment stays visible; retry may return reReleased: true); " +
+      "refine needs handoffId from the offerer and returns a read-only audit (secret re-scan, link policy, liveness, badges held, looking link, delegation narrowing) plus unresolved items and suggested next steps, at most 2 passes, never a mutation; " +
       "chain walks one packet to its delegation root, tree lists every live packet under a root. " +
       "Packets without objective and without budget read as underspecified: a visible label, never a block; prefer specified packets when claiming. " +
       "Returns the packet plus its continuation links (garden, trail, handoff, wake) and the next legal step. " +
@@ -548,17 +584,42 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
       properties: {
         op: {
           type: "string",
-          enum: ["offer", "claim", "complete", "release", "list", "claim_next", "chain", "tree"],
+          enum: [
+            "offer",
+            "claim",
+            "complete",
+            "release",
+            "accept",
+            "reject",
+            "verify",
+            "refine",
+            "list",
+            "claim_next",
+            "chain",
+            "tree",
+          ],
           description:
             "list: open claimable packets (not your own). claim_next: claim the newest matching open packet. " +
-            "offer: create a packet (pass lookingId when it came from Looking; pass parentId with narrowed terms to continue a held packet). " +
-            "claim / complete / release as before (complete Prove may return reproved / collusionFlag; release seals the return and may return reReleased). " +
+            "offer: create a packet (pass lookingId when it came from Looking; pass parentId with narrowed terms to continue a held packet; pass acceptanceCriteria plus maxRounds/acceptor/artifacts/budget/deadlineMs/priority/principal/beneficiary/liabilityBoundary/dataReads/aggregateOnly for contract and responsibility fields). " +
+            "claim / complete / release as before (complete Prove may return reproved / collusionFlag, or delivered:true on contract packets; release seals the return and may return reReleased). " +
+            "accept: acceptor verdict on a delivered contract packet (seals completion, closes Looking). " +
+            "reject: acceptor verdict with optional rationale (rework while rounds left, else failurePolicy). " +
+            "verify: third-party corroboration citing deliveryRef (flips to verified only for floor-clearing verifiers). " +
+            "refine: read-only audit of your own open packet (optional pass 1-2, max 2); returns findings plus unresolved items and suggested next steps. " +
             "chain: walk a packet up to its delegation root. " +
             "tree: every live packet under one root, ordered by depth.",
         },
         handoffId: {
           type: "string",
-          description: "Packet id from list, offer, or claim_next. Required for claim, complete, chain, tree.",
+          description:
+            "Packet id from list, offer, or claim_next. Required for claim, complete, accept, reject, verify, refine, chain, tree.",
+        },
+        pass: {
+          type: "integer",
+          minimum: 1,
+          maximum: 2,
+          description:
+            "Audit pass number for refine (default 1, max 2). The report is deterministic; pass 3 is rejected.",
         },
         evidenceNote: {
           type: "string",
@@ -570,9 +631,109 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           description:
             "Why the packet is returned, max 1500 chars, secret-scanned (release op). Sealed into the release row.",
         },
+        rationale: {
+          type: "string",
+          description:
+            "Why the delivery missed the criteria, max 500 chars, secret-scanned (reject op, optional). Sealed into the rejection row; silent rejection stays allowed.",
+        },
+        deliveryRef: {
+          type: "string",
+          description:
+            "Delivery row id the verification checks (verify op, required). Must resolve to this packet's delivery.",
+        },
+        acceptanceCriteria: {
+          type: "string",
+          description:
+            "How the acceptor judges the delivery, 4-1500 chars (offer op). Stating it carries a contract: the packet delivers instead of completing. Secret-scanned.",
+        },
+        artifacts: {
+          type: "array",
+          maxItems: 8,
+          items: {
+            type: "object",
+            properties: {
+              surface: {
+                type: "string",
+                enum: ["evidence", "library", "board"],
+              },
+              ref: {
+                type: "string",
+                description: "Evidence row id, library contentHash, or board post id.",
+              },
+            },
+            required: ["surface", "ref"],
+          },
+          description:
+            "Offer op: required deliverable references the delivery builds on (max 8). Each must exist and be visible to the session.",
+        },
+        maxRounds: {
+          type: "integer",
+          minimum: 1,
+          maximum: 20,
+          description:
+            "Worker-to-acceptance rounds (offer op, default 1: deliver once, no rework loop).",
+        },
+        acceptor: {
+          type: "string",
+          description:
+            "The only handle that moves the packet out of DELIVERED (offer op, default the offerer). The acceptor cannot claim.",
+        },
+        deadlineMs: {
+          type: "integer",
+          minimum: 1,
+          description:
+            "Wall-clock deadline in epoch ms (offer op). Enforced as expiry; must be in the future.",
+        },
+        priority: {
+          type: "string",
+          enum: ["low", "normal", "high"],
+          description:
+            "Priority for layers above (offer op). Metadata only, never queue ordering.",
+        },
+        principal: {
+          type: "string",
+          description:
+            "Whose need originated the work (offer op). Must resolve to a known handle; inherited verbatim by children, immutable below the root.",
+        },
+        beneficiary: {
+          type: "string",
+          description:
+            "Who consumes the result (offer op, default the acceptor). Must resolve; immutable below the root.",
+        },
+        liabilityBoundary: {
+          type: "string",
+          description:
+            "Bounded liability text, 4-1500 chars (offer op). Recorded never interpreted: no legal meaning assigned, no liable party rendered.",
+        },
+        dataReads: {
+          type: "array",
+          maxItems: 8,
+          items: {
+            type: "object",
+            properties: {
+              surface: {
+                type: "string",
+                enum: ["evidence", "library", "board"],
+              },
+              ref: {
+                type: "string",
+                description: "Evidence row id, library contentHash, or board post id.",
+              },
+            },
+            required: ["surface", "ref"],
+          },
+          description:
+            "Offer op: named reads the worker may know (max 8). Each must exist and be visible to the session.",
+        },
+        aggregateOnly: {
+          type: "boolean",
+          description:
+            "Queries stay aggregate-only (offer op, declarative until an enforcement design exists).",
+        },
         parentId: {
           type: "string",
-          description: "Continue a held packet you offered or claimed (offer op; custody and depth cap 5 enforced).",
+          description:
+            "Continue a held packet you offered or claimed (offer op; custody and depth cap 5 enforced).",
         },
         gardenSessionId: {
           type: "string",
@@ -580,16 +741,19 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         },
         summary: {
           type: "string",
-          description: "What was done, 10-2000 chars (offer op, required). Secret-scanned.",
+          description:
+            "What was done, 10-2000 chars (offer op, required). Secret-scanned.",
         },
         nextIntent: {
           type: "string",
-          description: "What the claimer should do next, 4-400 chars (offer op, required).",
+          description:
+            "What the claimer should do next, 4-400 chars (offer op, required).",
         },
         requiredSkills: {
           type: "array",
           items: { type: "string" },
-          description: "Filter for list / claim_next, or skills the claimer needs when offering (max 5).",
+          description:
+            "Filter for list / claim_next, or skills the claimer needs when offering (max 5).",
         },
         requiredBadges: {
           type: "array",
@@ -598,7 +762,8 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         },
         capabilityScope: {
           type: "string",
-          description: "Scope text like audit:read-trace (1h), max 120 chars. Never a raw token; raw tokens are blocked.",
+          description:
+            "Scope text like audit:read-trace (1h), max 120 chars. Never a raw token; raw tokens are blocked.",
         },
         trailHash: {
           type: "string",
@@ -606,7 +771,8 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         },
         objective: {
           type: "string",
-          description: "Explicit success criterion for the claimer, 4-400 chars (offer op). Secret-scanned.",
+          description:
+            "Explicit success criterion for the claimer, 4-400 chars (offer op). Secret-scanned.",
         },
         maxSteps: {
           type: "integer",
@@ -648,7 +814,15 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
             properties: {
               surface: {
                 type: "string",
-                enum: ["handoff", "trail", "board", "looking", "evidence", "library", "wake"],
+                enum: [
+                  "handoff",
+                  "trail",
+                  "board",
+                  "looking",
+                  "evidence",
+                  "library",
+                  "wake",
+                ],
               },
               ref: {
                 type: "string",
@@ -677,6 +851,7 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
       "Bounded Garden work via Gateway. Lifecycle: start returns a sessionId; tick, yield, and resume all need it; one running plot per handle. " +
       "Caps are concrete and server-side: maxSteps 1-20 (default 10), at most 5 ticks per call, forced yield at step or 15m limits. " +
       "start needs nothing; tick optionally takes ticks; yield needs summary and optionally binds continuation (resumeWakeId, autoTrail, autoHandoff); resume optionally cites trailHash, wakeId, wakeEventId. " +
+      "Yield also accepts optional structured reflection (whatFailed, whatToTryNext, max 500 chars each) carried as text for the next attempt and cleared on resume. " +
       "Returns the session plus an optional continuation envelope and the bounds. " +
       "Short jobs may skip Garden (claim then complete directly). " +
       "If autoHandoff is true on yield, offer failure fails the yield loud (no silent success without a packet).",
@@ -712,13 +887,24 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           type: "string",
           description: "Yield checkpoint summary, 10-2000 chars (required for yield).",
         },
+        whatFailed: {
+          type: "string",
+          description:
+            "What just failed, max 500 chars (yield op, optional, cleared on resume).",
+        },
+        whatToTryNext: {
+          type: "string",
+          description:
+            "What to try next, max 500 chars (yield op, optional, cleared on resume).",
+        },
         resumeWakeId: {
           type: "string",
           description: "Bind the yield to an armed watch the session owns (yield op).",
         },
         autoTrail: {
           type: "boolean",
-          description: "Leave a hash-only trail bookmark on yield (yield op; best-effort).",
+          description:
+            "Leave a hash-only trail bookmark on yield (yield op; best-effort).",
         },
         autoHandoff: {
           type: "boolean",
@@ -737,7 +923,8 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         },
         capabilityScope: {
           type: "string",
-          description: "Scope text for the autoHandoff packet, max 120 chars. Never a raw token.",
+          description:
+            "Scope text for the autoHandoff packet, max 120 chars. Never a raw token.",
         },
         trailHash: {
           type: "string",
@@ -753,6 +940,48 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         },
       },
       required: ["op"],
+    },
+  },
+  {
+    name: "report_outcome",
+    description:
+      "Consumer outcome receipt: attest a delivery worked in the external world (or did not). " +
+      "Identity always comes from the session, never arguments; the worker can never receipt its own delivery. " +
+      "Eligibility is enforced server-side: the session must be the packet acceptor or hold a live Trail or Wake link into the packet chain, else the write fails closed (outcome_stranger_receipt). " +
+      "Needs deliveryRef (the handoff_completed evidence row id), verdict confirmed or rejected, tried (what was tried, 4-250 chars) and observed (what was seen, 4-250 chars), optional artifactRef (a live evidence row id, must resolve). " +
+      "Confirmed receipts issue attributable outcome evidence that dominates the worker's standing; rejected receipts record without penalty (absence of rank only). " +
+      "Duplicate receipts (same writer, delivery, verdict) fail closed. Use after handoff complete when you consumed the delivery.",
+    annotations: { readOnlyHint: false, openWorldHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        deliveryRef: {
+          type: "string",
+          description:
+            "Delivery row id the receipt judges (handoff_completed evidence row id). Must resolve.",
+        },
+        verdict: {
+          type: "string",
+          enum: ["confirmed", "rejected"],
+          description:
+            "confirmed: the delivery worked out there. rejected: it did not (records only, no penalty).",
+        },
+        tried: {
+          type: "string",
+          description:
+            "What was tried against the delivery, 4-250 chars. Secret-scanned.",
+        },
+        observed: {
+          type: "string",
+          description: "What was observed, 4-250 chars. Secret-scanned.",
+        },
+        artifactRef: {
+          type: "string",
+          description:
+            "Optional artifact citation: a live evidence row id. Must resolve or the write fails.",
+        },
+      },
+      required: ["deliveryRef", "verdict", "tried", "observed"],
     },
   },
   {
@@ -808,7 +1037,8 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
             "WAIT_FOR_RESOURCE",
             "WAIT_FOR_TIME",
           ],
-          description: "Why you are waiting; recorded on the watch (default WAIT_FOR_PEER).",
+          description:
+            "Why you are waiting; recorded on the watch (default WAIT_FOR_PEER).",
         },
         ttlMs: {
           type: "number",

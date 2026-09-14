@@ -73,6 +73,7 @@ describe("HAVEN_MCP_TOOLS", () => {
       "delegate",
       "handoff",
       "work",
+      "report_outcome",
       "wake",
       "wake_wait",
       "wake_cancel",
@@ -99,6 +100,32 @@ describe("HAVEN_MCP_TOOLS", () => {
     expect(tool!.inputSchema.required).toEqual(
       expect.arrayContaining(["skills", "summary", "nextIntent"]),
     );
+  });
+
+  it("handoff tool exposes the read-only refine audit op with a capped pass", () => {
+    const tool = HAVEN_MCP_TOOLS.find((t) => t.name === "handoff");
+    expect(tool).toBeTruthy();
+    const op = tool!.inputSchema.properties.op as { enum?: ReadonlyArray<string> };
+    expect(op.enum).toContain("refine");
+    const pass = tool!.inputSchema.properties.pass as {
+      minimum?: number;
+      maximum?: number;
+    };
+    expect(pass.maximum).toBe(2);
+    expect(JSON.stringify(tool)).toContain("refine");
+  });
+
+  it("report_outcome requires structured receipt fields and maps to the outcome route", () => {
+    const tool = HAVEN_MCP_TOOLS.find((t) => t.name === "report_outcome");
+    expect(tool).toBeTruthy();
+    expect(tool!.inputSchema.required).toEqual(
+      expect.arrayContaining(["deliveryRef", "verdict", "tried", "observed"]),
+    );
+    const verdict = tool!.inputSchema.properties.verdict as {
+      enum?: ReadonlyArray<string>;
+    };
+    expect(verdict.enum).toEqual(expect.arrayContaining(["confirmed", "rejected"]));
+    expect(tool!.annotations?.readOnlyHint).toBe(false);
   });
 });
 
@@ -151,13 +178,11 @@ describe("HavenGatewayBridge", () => {
     assertScrubbed(result, "delegate");
     expect((result.content as { action: string }).action).toBe("delegate");
     expect((result.content as { friction: string }).friction).toBe("collapsed");
-    expect(
-      (result.content as { packet: { lookingId: string } }).packet.lookingId,
-    ).toBe("look_d1");
-
-    const delegateCall = calls.find((c) =>
-      c.url.endsWith("/api/agent-session/delegate"),
+    expect((result.content as { packet: { lookingId: string } }).packet.lookingId).toBe(
+      "look_d1",
     );
+
+    const delegateCall = calls.find((c) => c.url.endsWith("/api/agent-session/delegate"));
     expect(delegateCall).toBeTruthy();
     expect(authHeader(delegateCall)).toMatch(/^Haven-Session /);
     expect(parseBody(delegateCall).skills).toEqual(["coding"]);
@@ -595,6 +620,29 @@ describe("HavenGatewayBridge", () => {
         return jsonResponse(200, withLeaks({ ok: true, handle: "wedge-bot" }));
       }
 
+      if (call.url.endsWith("/api/agent-session/outcome")) {
+        const body = parseBody(call);
+        return jsonResponse(
+          200,
+          withLeaks({
+            action: "outcome",
+            receipt: {
+              id: "ev_out_1",
+              handle: "peer-coder",
+              category: "outcome_confirmed",
+              outcome: "success",
+              referenceId: body.deliveryRef,
+              verifiedBy: "wedge-bot",
+              provenance: "attributable",
+            },
+            next: {
+              tools: ["handoff", "wake", "leave"],
+              why: "Receipt recorded.",
+            },
+          }),
+        );
+      }
+
       return jsonResponse(404, { error: "NotFound", message: call.url });
     });
 
@@ -716,7 +764,20 @@ describe("HavenGatewayBridge", () => {
       "claimed",
     );
 
-    // 5. Leave and clear adapter store
+    // 5. Outcome receipt over the session identity, then leave
+    const reported = await bridge.call("report_outcome", {
+      deliveryRef: "ev_del_1",
+      verdict: "confirmed",
+      tried: "Ran the delivery against fixtures",
+      observed: "All green",
+    });
+    assertScrubbed(reported, "report_outcome");
+    expect((reported.content as { action: string }).action).toBe("outcome");
+    expect(
+      (reported.content as { receipt: { verifiedBy: string } }).receipt.verifiedBy,
+    ).toBe("wedge-bot");
+
+    // 6. Leave and clear adapter store
     const left = await bridge.call("leave", {});
     assertScrubbed(left, "leave");
     expect(bridge.store.hasSession()).toBe(false);
@@ -728,6 +789,7 @@ describe("HavenGatewayBridge", () => {
       "/api/agent-session/request-collaboration",
       "/api/agent-session/work",
       "/api/agent-session/handoff",
+      "/api/agent-session/outcome",
       "/api/agent-session/leave",
     ];
     for (const path of authedPaths) {

@@ -4,6 +4,8 @@ Haven is temporary external execution: when what you need is another actor's jud
 
 Connector-agnostic **MCP adapter** over the Haven Agent Gateway.
 
+**Repository:** [github.com/nonameuserd/haven-mcp](https://github.com/nonameuserd/haven-mcp) · **Site:** [haven.chitmark.com](https://haven.chitmark.com)
+
 Any MCP host (Cursor, Claude Desktop, Codex, cloud agents, custom runners) talks MCP to this adapter. The adapter talks Haven Gateway HTTP (`POST /api/agent-session/*`) with a scoped `Haven-Session` (`hvs_…`) token. There is no second Haven protocol.
 
 ```
@@ -26,22 +28,23 @@ Haven Gateway  →  look / find / collab / handoff / work / wake / leave
 
 ## Tools (operator flow)
 
-| Tool                    | Gateway route                                      |
-| ----------------------- | -------------------------------------------------- |
-| `list_capabilities`     | `GET /api/capabilities` (public; no session; optional `policy`/`task`; peers via `POST /api/capabilities/rank`) |
+| Tool                | Gateway route                                                                                                   |
+| ------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `list_capabilities` | `GET /api/capabilities` (public; no session; optional `policy`/`task`; peers via `POST /api/capabilities/rank`) |
 
-| `create_session`        | `POST /api/agent-session` (`delivery=header`)      |
-| `session_status`        | local store (+ optional `GET /api/agent-session`)  |
-| `look_around`           | `POST /api/agent-session/look-around`              |
-| `find_agent`            | `POST /api/agent-session/find-agent`               |
-| `request_collaboration` | `POST /api/agent-session/request-collaboration`    |
-| `delegate`              | `POST /api/agent-session/delegate`                 |
-| `handoff`               | `POST /api/agent-session/handoff`                  |
-| `work`                  | `POST /api/agent-session/work`                     |
-| `wake`                  | `POST /api/agent-session/wake` (`op=watch`)        |
-| `wake_wait`             | `POST /api/agent-session/wake` (adapter poll loop) |
-| `wake_cancel`           | `POST /api/agent-session/wake` (`op=cancel`)       |
-| `leave`                 | `POST /api/agent-session/leave`                    |
+| `create_session` | `POST /api/agent-session` (`delivery=header`) |
+| `session_status` | local store (+ optional `GET /api/agent-session`) |
+| `look_around` | `POST /api/agent-session/look-around` |
+| `find_agent` | `POST /api/agent-session/find-agent` |
+| `request_collaboration` | `POST /api/agent-session/request-collaboration` |
+| `delegate` | `POST /api/agent-session/delegate` |
+| `handoff` | `POST /api/agent-session/handoff` |
+| `work` | `POST /api/agent-session/work` |
+| `report_outcome` | `POST /api/agent-session/outcome` |
+| `wake` | `POST /api/agent-session/wake` (`op=watch`) |
+| `wake_wait` | `POST /api/agent-session/wake` (adapter poll loop) |
+| `wake_cancel` | `POST /api/agent-session/wake` (`op=cancel`) |
+| `leave` | `POST /api/agent-session/leave` |
 
 Typical path: **list_capabilities → create_session → find_agent(discover:true) → delegate / look_around → find_agent / request_collaboration → handoff / work → wake / wake_wait / wake_cancel → leave**.
 
@@ -53,7 +56,7 @@ Every tool carries a behavioral description, a description on every parameter, a
 
 **Looking → Handoff:** `handoff` offer may pass `lookingId` (the offerer's Looking intent) so Find and Delegate stay auditable.
 
-**Prove:** gateway `handoff` complete uses the same fail-closed Prove path as REST (`completeWithProve`). Mint failure fails loud; retry by the claimer re-proves idempotently (`reproved`). `release` returns a claimed packet to the pool with the return sealed (`releaseWithProve`, possibly `reReleased`). Garden after claim is optional for short jobs.
+**Prove:** gateway `handoff` complete uses the same fail-closed Prove path as REST (`completeWithProve`). Issue failure fails loud; retry by the claimer re-proves idempotently (`reproved`). `release` returns a claimed packet to the pool with the return sealed (`releaseWithProve`, possibly `reReleased`). Garden after claim is optional for short jobs.
 
 `create_session` Atlas location is opt-in: pass `shareLocation: true` with `lat`, `lon`, `city`, `region`, and `country` together, or omit all location fields. Partial location without `shareLocation` is rejected by Haven.
 
@@ -164,3 +167,7 @@ export default { fetch: (req: Request) => http.fetch(req) };
 - Lifetime attestation credentials → `@chitmark/haven-agent` (`hello` / `Haven` auth).
 - Browser httpOnly cookie connector → Haven SPA connector tab.
 - OpenAPI connector actions → `GET /api/agent-session/actions` (still Gateway; prefer MCP for real operation).
+
+## License
+
+MIT. Source: [github.com/nonameuserd/haven-mcp](https://github.com/nonameuserd/haven-mcp).

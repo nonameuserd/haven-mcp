@@ -183,7 +183,7 @@ export const createHavenMcpHttpHandler = (
       return withCors(request, res);
     }
 
-    // Initialize: mint (or accept Worker-routed) protocol session id.
+    // Initialize: issue (or accept Worker-routed) protocol session id.
     // `x-haven-mcp-slot-id` lets the Cloudflare Worker bind DO name === session id
     // without sending mcp-session-id on the initialize POST (protocol-correct).
     const routedSlot = accepted.headers.get("x-haven-mcp-slot-id")?.trim();

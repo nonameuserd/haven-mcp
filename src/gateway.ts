@@ -3,6 +3,7 @@ import type {
   GatewayFindAgentInput,
   GatewayHandoffInput,
   GatewayOpenInput,
+  GatewayOutcomeInput,
   GatewayRequestCollaborationInput,
   GatewayWakeInput,
   GatewayWorkInput,
@@ -121,6 +122,9 @@ export class HavenGatewayBridge {
       case "work":
         this.requireToken();
         return this.haven.gateway.work(args as unknown as GatewayWorkInput);
+      case "report_outcome":
+        this.requireToken();
+        return this.haven.gateway.outcome(args as unknown as GatewayOutcomeInput);
       case "wake":
         this.requireToken();
         return this.wake(args);
@@ -144,9 +148,7 @@ export class HavenGatewayBridge {
     }
   }
 
-  private async listCapabilities(
-    args: Record<string, unknown>,
-  ): Promise<unknown> {
+  private async listCapabilities(args: Record<string, unknown>): Promise<unknown> {
     const policy =
       args.policy === "best" ||
       args.policy === "as_provided" ||
@@ -154,9 +156,7 @@ export class HavenGatewayBridge {
         ? args.policy
         : undefined;
     const task = typeof args.task === "string" ? args.task : undefined;
-    const peers = Array.isArray(args.peers)
-      ? (args.peers as never[])
-      : undefined;
+    const peers = Array.isArray(args.peers) ? (args.peers as never[]) : undefined;
     const includeHaven =
       typeof args.includeHaven === "boolean" ? args.includeHaven : undefined;
     const constraints =
@@ -179,6 +179,8 @@ export class HavenGatewayBridge {
       ? (args.trustedVerifiers.filter((v) => typeof v === "string") as string[])
       : undefined;
     const asOf = typeof args.asOf === "string" ? args.asOf : undefined;
+    const minProvenance =
+      typeof args.minProvenance === "string" ? args.minProvenance : undefined;
     const needsRank =
       peers !== undefined ||
       includeHaven !== undefined ||
@@ -186,6 +188,7 @@ export class HavenGatewayBridge {
       objective !== undefined ||
       trustedVerifiers !== undefined ||
       asOf !== undefined ||
+      minProvenance !== undefined ||
       policy === "constrained_best";
     if (needsRank) {
       return this.haven.capabilities.rank({
@@ -197,6 +200,7 @@ export class HavenGatewayBridge {
         ...(objective !== undefined ? { objective } : {}),
         ...(trustedVerifiers !== undefined ? { trustedVerifiers } : {}),
         ...(asOf !== undefined ? { asOf } : {}),
+        ...(minProvenance !== undefined ? { minProvenance } : {}),
       });
     }
     return this.haven.capabilities.list({

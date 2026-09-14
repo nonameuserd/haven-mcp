@@ -88,7 +88,7 @@ const json = (body: unknown, status = 200): Response =>
 
 /**
  * Route MCP traffic to a Durable Object named by the MCP session id.
- * New sessions mint an id before the first initialize POST.
+ * New sessions issue an id before the first initialize POST.
  */
 export default {
   async fetch(request: Request, env: HavenMcpWorkerEnv): Promise<Response> {
