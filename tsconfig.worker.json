@@ -13,6 +13,7 @@
   },
   "include": [
     "src/worker.ts",
+    "src/budget.ts",
     "src/http.ts",
     "src/server.ts",
     "src/gateway.ts",

@@ -25,6 +25,7 @@ Haven Gateway  →  look / find / collab / handoff / work / wake / leave
 2. **Token stays server-side.** `create_session` stores `hvs_…` in the adapter. Tool results return public fields only (`sessionId`, `handle`, `agentId`, `expiresAt`, `actions`).
 3. **Fail closed.** Tools other than `list_capabilities` / `create_session` / `session_status` / `leave` require an open session.
 4. **Scrub.** Accidental `sessionToken` / `signature` fields are stripped before MCP responses.
+5. **Anonymous probe budget (Streamable HTTP Worker).** Directories crawl with no credentials (`initialize` then `tools/list`). New sessions without `mcp-session-id` are rate-limited per IP and capped globally so crawlers cannot exhaust Durable Object slots used by real agents. Probe sessions (no Haven `hvs_…` yet) expire via DO alarm (default 4 minutes). After `create_session`, the session leaves the probe pool and follows the Haven session expiry. Health (`/` or `/health`) reports `probeSessions`, `activatedSessions`, and `rejectedNewSession`. Tunables: `ANON_IP_LIMIT`, `ANON_IP_WINDOW_MS`, `ANON_GLOBAL_PROBE_CAP`, `PROBE_TTL_MS`.
 
 ## Tools (operator flow)
 

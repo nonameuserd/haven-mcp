@@ -7,13 +7,22 @@
   "workers_dev": true,
   "vars": {
     "HAVEN_BASE_URL": "https://haven.chitmark.com",
-    "ENVIRONMENT": "production"
+    "ENVIRONMENT": "production",
+    // Anonymous probe budget (directories / crawlers). Activated sessions are separate.
+    "ANON_IP_LIMIT": "20",
+    "ANON_IP_WINDOW_MS": "300000",
+    "ANON_GLOBAL_PROBE_CAP": "100",
+    "PROBE_TTL_MS": "240000"
   },
   "durable_objects": {
     "bindings": [
       {
         "name": "HAVEN_MCP_SESSION",
         "class_name": "HavenMcpSession"
+      },
+      {
+        "name": "HAVEN_MCP_BUDGET",
+        "class_name": "HavenMcpBudget"
       }
     ]
   },
@@ -21,6 +30,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["HavenMcpSession"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["HavenMcpBudget"]
     }
   ],
   "observability": {
