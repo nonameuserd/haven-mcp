@@ -162,8 +162,11 @@ export class HavenMcpBudget {
       return json({ ok: true, ...budget.snapshot() });
     }
 
-    if (request.method === "POST" && url.pathname === "/activate") {
-      budget.activate();
+    if (
+      request.method === "POST" &&
+      (url.pathname === "/activate" || url.pathname === "/resume")
+    ) {
+      budget.activate(url.pathname === "/activate");
       await this.persist();
       return json({ ok: true, ...budget.snapshot() });
     }
@@ -211,7 +214,9 @@ export class HavenMcpSession {
     await this.ctx.storage.put(BUDGET_TIER_KEY, tier);
   }
 
-  private async notifyBudget(path: "/activate" | "/release-probe" | "/release-activated"): Promise<void> {
+  private async notifyBudget(
+    path: "/activate" | "/resume" | "/release-probe" | "/release-activated",
+  ): Promise<void> {
     try {
       await budgetPost(this.env, path);
     } catch {
@@ -240,10 +245,15 @@ export class HavenMcpSession {
 
   private async onHavenSessionSaved(session: StoredGatewaySession): Promise<void> {
     const tier = await this.getTier();
-    if (tier === "probe" && !this.activatedNotified) {
+    if (!session.sessionToken) {
+      await this.onHavenSessionCleared();
+      await this.scheduleActivatedAlarm(session.expiresAt);
+      return;
+    }
+    if (tier !== "activated") {
       this.activatedNotified = true;
       await this.setTier("activated");
-      await this.notifyBudget("/activate");
+      await this.notifyBudget(tier === "probe" ? "/activate" : "/resume");
     }
     await this.scheduleActivatedAlarm(session.expiresAt);
   }
@@ -291,8 +301,6 @@ export class HavenMcpSession {
    */
   async alarm(): Promise<void> {
     const tier = await this.getTier();
-    if (tier === "released") return;
-
     const row = await this.ctx.storage.get<StoredGatewaySession>(HAVEN_SESSION_KEY);
     if (!row) {
       await this.setTier("released");
@@ -313,7 +321,7 @@ export class HavenMcpSession {
 
     await this.ctx.storage.delete(HAVEN_SESSION_KEY);
     await this.setTier("released");
-    await this.notifyBudget("/release-activated");
+    if (tier === "activated") await this.notifyBudget("/release-activated");
     this.handler = null;
   }
 
@@ -325,7 +333,7 @@ export class HavenMcpSession {
       await this.onHavenSessionSaved(row);
     } else if (tier === "probe") {
       await this.scheduleProbeAlarm();
-    } else if (tier === "activated" && row) {
+    } else if (row) {
       await this.scheduleActivatedAlarm(row.expiresAt);
     }
     return this.getHandler().fetch(request);

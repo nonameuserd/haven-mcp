@@ -14,6 +14,8 @@ export type StoredGatewaySession = {
   readonly actions: ReadonlyArray<string>;
   /** Opaque Haven-Session token. Never serialize to tool results. */
   readonly sessionToken: string;
+  /** Opt-in, one-use identity continuation. Runtime-only and lease-bounded. */
+  readonly resumeToken?: string;
 };
 
 /** Optional persistence hooks (Durable Object / KV). Sync API stays for stdio. */
@@ -28,6 +30,7 @@ export type GatewaySessionStoreHooks = {
  */
 export class GatewaySessionStore {
   private current: StoredGatewaySession | null = null;
+  private pending: Promise<unknown> = Promise.resolve();
   private readonly hooks: GatewaySessionStoreHooks;
 
   constructor(hooks: GatewaySessionStoreHooks = {}) {
@@ -42,33 +45,67 @@ export class GatewaySessionStore {
   /** Store a gateway session after open. Replaces any prior session. */
   set(session: StoredGatewaySession): void {
     this.current = session;
-    void this.hooks.onSet?.(session);
+    this.pending = Promise.all([this.pending, this.hooks.onSet?.(session)]).then(
+      () => undefined,
+    );
   }
 
   /** Public view only (no sessionToken). */
-  getPublic(): Omit<StoredGatewaySession, "sessionToken"> | null {
+  getPublic(): Omit<StoredGatewaySession, "sessionToken" | "resumeToken"> | null {
     if (!this.current) return null;
-    const { sessionToken: _omit, ...pub } = this.current;
+    const { sessionToken: _omit, resumeToken: _resume, ...pub } = this.current;
     return pub;
   }
 
   /** Opaque token for Gateway Authorization. Never expose via tools. */
   getToken(): string | null {
-    return this.current?.sessionToken ?? null;
+    return this.current?.sessionToken || null;
   }
 
   hasSession(): boolean {
-    return this.current !== null;
+    return !!this.getToken();
+  }
+
+  /** Explicitly ended access session may retain only an opted-in continuation. */
+  endSession(forgetResume = false): void {
+    if (
+      !forgetResume &&
+      this.current?.resumeToken &&
+      Date.parse(this.current.expiresAt) > Date.now()
+    ) {
+      this.set({ ...this.current, sessionToken: "" });
+    } else this.clear();
+  }
+
+  getResumeToken(handle: string): string | null {
+    if (
+      !this.current ||
+      this.current.handle !== handle ||
+      Date.parse(this.current.expiresAt) <= Date.now()
+    )
+      return null;
+    return this.current.resumeToken ?? null;
+  }
+
+  /** Wait until rotated credentials have reached the configured durable store. */
+  async flush(): Promise<void> {
+    await this.pending;
   }
 
   clear(): void {
     this.current = null;
-    void this.hooks.onClear?.();
+    this.pending = Promise.all([this.pending, this.hooks.onClear?.()]).then(
+      () => undefined,
+    );
   }
 }
 
 /** Keys that must never appear in MCP tool results (case-insensitive). */
 const SENSITIVE_KEYS = new Set([
+  "resumetoken",
+  "resume_token",
+  "resumetokenhash",
+  "resume_token_hash",
   "sessiontoken",
   "session_token",
   "signature",
@@ -117,9 +154,9 @@ export const scrubSensitiveText = (text: string): string => redactSensitiveStrin
 export const toolResultLeaksSecrets = (value: unknown): boolean => {
   const blob = typeof value === "string" ? value : JSON.stringify(value);
   if (!blob) return false;
-  if (/\bhvs_[A-Za-z0-9_-]{8,}\b/.test(blob)) return true;
+  if (/\bhv[sr]_[A-Za-z0-9_-]{8,}\b/.test(blob)) return true;
   if (/"signature"\s*:/.test(blob)) return true;
-  if (/"sessionToken"\s*:/i.test(blob)) return true;
+  if (/"(?:sessionToken|resumeToken)"\s*:/i.test(blob)) return true;
   if (/\bHaven-Session\s+hvs_/i.test(blob)) return true;
   if (/\bHaven\s+agt_[A-Za-z0-9_]+\s+[A-Za-z0-9+/=_-]{16,}\b/.test(blob)) return true;
   if (/\bHaven\s+agt_[A-Za-z0-9_]+\b/.test(blob)) return true;
@@ -127,7 +164,7 @@ export const toolResultLeaksSecrets = (value: unknown): boolean => {
 };
 
 const redactSensitiveString = (s: string): string => {
-  let out = s.replace(/\bhvs_[A-Za-z0-9_-]{8,}\b/g, "[redacted-session]");
+  let out = s.replace(/\bhv[sr]_[A-Za-z0-9_-]{8,}\b/g, "[redacted-session]");
   // Full attestation Authorization form: Haven <agentId> <signature>
   out = out.replace(
     /\bHaven\s+agt_[A-Za-z0-9_]+\s+[A-Za-z0-9+/=_-]{16,}\b/gi,
@@ -138,6 +175,10 @@ const redactSensitiveString = (s: string): string => {
   out = out.replace(
     /\bHaven-Session\s+\[redacted-session\]/gi,
     "Haven-Session [redacted-session]",
+  );
+  out = out.replace(
+    /\bHaven-Resume\s+\[redacted-session\]/gi,
+    "Haven-Resume [redacted-session]",
   );
   out = out.replace(/\bagt_[A-Za-z0-9_]{6,}\b/g, "[redacted-agent]");
   // Long hex blobs that look like attestation/hash material in free text.

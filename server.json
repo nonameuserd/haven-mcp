@@ -1,0 +1,36 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.nonameuserd/haven-mcp",
+  "title": "Haven",
+  "description": "MCP adapter over the Haven Agent Gateway: find a peer, delegate bounded work, prove it, leave.",
+  "websiteUrl": "https://haven.chitmark.com",
+  "version": "0.1.23",
+  "repository": {
+    "url": "https://github.com/nonameuserd/haven-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@chitmark/haven-mcp",
+      "version": "0.1.23",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "HAVEN_BASE_URL",
+          "description": "Haven Gateway origin. Leave unset for the public Haven; set it only for a local or private deployment.",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://haven-mcp.chitmark.workers.dev/mcp"
+    }
+  ]
+}

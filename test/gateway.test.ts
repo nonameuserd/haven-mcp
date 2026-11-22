@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { HavenGatewayBridge, wakeWaitDelayMs } from "../src/gateway.js";
 import type { ToolCallResult } from "../src/gateway.js";
-import { toolResultLeaksSecrets } from "../src/session.js";
-import { HAVEN_MCP_TOOLS } from "../src/tools.js";
+import { GatewaySessionStore, toolResultLeaksSecrets } from "../src/session.js";
+import { HAVEN_MCP_TOOL_GATEWAY, HAVEN_MCP_TOOLS } from "../src/tools.js";
 
 type FetchCall = { url: string; init?: RequestInit };
 
@@ -73,6 +73,12 @@ describe("HAVEN_MCP_TOOLS", () => {
       "delegate",
       "handoff",
       "work",
+      "create_swarm",
+      "join_swarm",
+      "leave_swarm",
+      "renew_swarm",
+      "list_worlds",
+      "join_world",
       "report_outcome",
       "wake",
       "wake_wait",
@@ -115,6 +121,49 @@ describe("HAVEN_MCP_TOOLS", () => {
     expect(JSON.stringify(tool)).toContain("refine");
   });
 
+  it("list_worlds is a read with no arguments and no session claim", () => {
+    const tool = HAVEN_MCP_TOOLS.find((t) => t.name === "list_worlds");
+    expect(tool).toBeTruthy();
+    expect(tool!.annotations?.readOnlyHint).toBe(true);
+    expect(tool!.annotations?.destructiveHint).toBeUndefined();
+    // No arguments at all: the read is the whole catalogue, and a filter here
+    // would be a second shape that could disagree with `GET /api/worlds`.
+    expect(Object.keys(tool!.inputSchema.properties)).toEqual([]);
+    expect(tool!.inputSchema.required).toBeUndefined();
+    expect(HAVEN_MCP_TOOL_GATEWAY.list_worlds).toEqual({
+      method: "GET",
+      path: "/api/worlds",
+    });
+    // The description has to carry what the payload needs, because a host reads
+    // this and not the docs: that the list is not "mine", that `null` is not
+    // `false`, and which tool to call next.
+    const desc = tool!.description;
+    expect(desc).toContain("do not own");
+    expect(desc).toContain("requiresAttested");
+    expect(desc).toContain("join_world");
+  });
+
+  it("join_world is annotated idempotent and takes only a world id and a role", () => {
+    const tool = HAVEN_MCP_TOOLS.find((t) => t.name === "join_world");
+    expect(tool).toBeTruthy();
+    // Idempotent is the annotation a host reads before retrying a mutation, so it
+    // has to be true of the route, not aspirational.
+    expect(tool!.annotations?.idempotentHint).toBe(true);
+    expect(tool!.annotations?.readOnlyHint).toBe(false);
+    expect(tool!.inputSchema.required).toEqual(["worldId"]);
+    const role = tool!.inputSchema.properties.role as { enum?: ReadonlyArray<string> };
+    expect(role.enum).toEqual(["member", "observer"]);
+    // Identity is the session, so no identity field may appear in the schema at
+    // all. A `handle` property here would be an argument a prompt could fill in.
+    const props = Object.keys(tool!.inputSchema.properties);
+    expect(props).not.toContain("handle");
+    expect(props).not.toContain("agentId");
+    expect(HAVEN_MCP_TOOL_GATEWAY.join_world).toEqual({
+      method: "POST",
+      path: "/api/worlds/:id/join",
+    });
+  });
+
   it("report_outcome requires structured receipt fields and maps to the outcome route", () => {
     const tool = HAVEN_MCP_TOOLS.find((t) => t.name === "report_outcome");
     expect(tool).toBeTruthy();
@@ -130,6 +179,161 @@ describe("HAVEN_MCP_TOOLS", () => {
 });
 
 describe("HavenGatewayBridge", () => {
+  it("list_worlds reads the ledger with no session and no Authorization header", async () => {
+    const { fetchImpl, calls } = mockFetch((call) => {
+      if (call.url.endsWith("/api/worlds")) {
+        return jsonResponse(200, [
+          {
+            id: "world_open",
+            name: "Open room",
+            status: "active",
+            ownerHandle: "someone-else",
+            participantCount: 2,
+            resourceCount: 1,
+            evidenceCount: 0,
+            lookingCount: 0,
+            handoffCount: 1,
+            gardenCount: 0,
+            ownerIdentity: "operator_attested",
+            verdict: { code: "ALW", reason: "allowed by this deployment" },
+            admission: {
+              enterable: true,
+              requiresAttested: null,
+              reason: "live, 2 of 16 seats taken",
+            },
+            createdAt: "2026-01-01T00:00:00.000Z",
+            expiresAt: "2026-01-01T01:00:00.000Z",
+          },
+        ]);
+      }
+      return jsonResponse(404, { error: "NotFound", message: call.url });
+    });
+    // No create_session first: discovery must work before authenticating, and
+    // the test proves it by never opening one.
+    const bridge = new HavenGatewayBridge({
+      baseUrl: "https://haven.test",
+      fetch: fetchImpl,
+    });
+    const result = await bridge.call("list_worlds", {});
+    assertScrubbed(result, "list_worlds");
+    const rows = result.content as ReadonlyArray<{
+      id: string;
+      admission: { enterable: boolean };
+    }>;
+    expect(rows.map((r) => r.id)).toEqual(["world_open"]);
+    expect(rows[0]!.admission.enterable).toBe(true);
+    // A header promising caller-specific behaviour would be a claim the route
+    // does not honour, since it composes nothing from the caller.
+    expect(calls).toHaveLength(1);
+    expect(authHeader(calls[0])).toBeUndefined();
+    expect(calls[0]!.init?.method).toBe("GET");
+  });
+
+  it("list_worlds surfaces a refusal rather than an empty catalogue", async () => {
+    const { fetchImpl } = mockFetch(() =>
+      jsonResponse(503, {
+        error: "DatabaseError",
+        message: "Haven is temporarily unavailable. Try again in a moment.",
+      }),
+    );
+    const bridge = new HavenGatewayBridge({
+      baseUrl: "https://haven.test",
+      fetch: fetchImpl,
+    });
+    const result = await bridge.call("list_worlds", {});
+    // An empty list here would read as "no Worlds exist", which is the one thing
+    // a broken database must never be able to say.
+    expect(result.ok).toBe(false);
+    expect(result.content).toBeNull();
+  });
+
+  it("join_world posts the World route with session auth and no identity in the body", async () => {
+    const { fetchImpl, calls } = mockFetch((call) => {
+      if (call.url.endsWith("/api/agent-session") && call.init?.method === "POST") {
+        return jsonResponse(200, {
+          sessionId: "sess_join",
+          sessionToken: SESSION_TOKEN,
+          handle: "mcp-joiner",
+          agentId: "agt_joiner",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          actions: ["join_world", "leave"],
+          delivery: "header",
+        });
+      }
+      if (call.url.endsWith("/api/worlds/world%20one/join")) {
+        return jsonResponse(
+          200,
+          withLeaks({
+            participant: {
+              worldId: "world one",
+              handle: "mcp-joiner",
+              agentId: "agt_joiner",
+              role: "observer",
+              joinedAt: "2026-01-01T00:00:00.000Z",
+            },
+            snapshot: { id: "world one", activeParticipants: [{ handle: "mcp-joiner" }] },
+            rejoin: false,
+          }),
+        );
+      }
+      return jsonResponse(404, { error: "NotFound", message: call.url });
+    });
+    const bridge = new HavenGatewayBridge({
+      baseUrl: "https://haven.test",
+      fetch: fetchImpl,
+    });
+    await bridge.call("create_session", { handle: "mcp-joiner" });
+    const result = await bridge.call("join_world", {
+      worldId: "world one",
+      role: "observer",
+      handle: "someone-else",
+      agentId: "agt_someone_else",
+    });
+    assertScrubbed(result, "join_world");
+    expect((result.content as { rejoin: boolean }).rejoin).toBe(false);
+
+    const joinCall = calls.find((c) => c.url.includes("/join"));
+    expect(joinCall?.url).toBe("https://haven.test/api/worlds/world%20one/join");
+    expect(joinCall?.init?.method).toBe("POST");
+    // Haven-Session, never an attestation signature: the adapter holds the token.
+    expect(authHeader(joinCall)).toBe(`Haven-Session ${SESSION_TOKEN}`);
+    // The hostile arguments are dropped rather than forwarded, which is the whole
+    // reason identity never appears in the tool schema.
+    expect(parseBody(joinCall)).toEqual({ role: "observer" });
+  });
+
+  it("join_world without a worldId fails before any request", async () => {
+    // The session opens normally, so the only thing that can refuse the call is
+    // the missing argument. A mock that failed every request would prove nothing
+    // about which check fired first.
+    const { fetchImpl, calls } = mockFetch((call) => {
+      if (call.url.endsWith("/api/agent-session") && call.init?.method === "POST") {
+        return jsonResponse(200, {
+          sessionId: "sess_join",
+          sessionToken: SESSION_TOKEN,
+          handle: "mcp-joiner",
+          agentId: "agt_joiner",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          actions: ["join_world", "leave"],
+          delivery: "header",
+        });
+      }
+      return jsonResponse(500, {
+        error: "DatabaseError",
+        message: "should not be called",
+      });
+    });
+    const bridge = new HavenGatewayBridge({
+      baseUrl: "https://haven.test",
+      fetch: fetchImpl,
+    });
+    await bridge.call("create_session", { handle: "mcp-joiner" });
+    const result = await bridge.call("join_world", {});
+    expect(result.ok).toBe(false);
+    expect(String((result as { error?: string }).error)).toContain("worldId");
+    expect(calls.some((c) => c.url.includes("/join"))).toBe(false);
+  });
+
   it("delegate posts Looking+offer via gateway path and scrubs secrets", async () => {
     const { fetchImpl, calls } = mockFetch((call) => {
       if (call.url.endsWith("/api/agent-session") && call.init?.method === "POST") {
@@ -975,3 +1179,102 @@ describe("wakeWaitDelayMs", () => {
     expect([0, 1, 2, 3, 10].map(wakeWaitDelayMs)).toEqual([1000, 2000, 5000, 5000, 5000]);
   });
 });
+
+it("retains an opted-in continuation across leave and durable hydration without exposing it", async () => {
+  const continuation = "hvr_" + "a".repeat(32);
+  let saved: import("../src/session.js").StoredGatewaySession | null = null;
+  let opens = 0;
+  const { fetchImpl, calls } = mockFetch(({ url, init }) => {
+    if (url.endsWith("/api/agent-session")) {
+      opens++;
+      const body = JSON.parse(String(init?.body));
+      if (opens === 1) expect(body.resumable).toBe(true);
+      else {
+        expect(body.resume).toBe(true);
+        expect((init?.headers as Record<string, string>).Authorization).toBe(
+          `Haven-Resume ${continuation}`,
+        );
+      }
+      return jsonResponse(200, {
+        sessionId: "ags_resume",
+        handle: "resume-mcp",
+        agentId: "agt_original",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        actions: ["handoff", "leave"],
+        sessionToken: opens === 1 ? SESSION_TOKEN : "hvs_rotated_access_abcdefghijklmnop",
+        resumeToken: opens === 1 ? continuation : "hvr_" + "b".repeat(32),
+      });
+    }
+    if (url.endsWith("/api/agent-session/leave"))
+      return jsonResponse(200, { ok: true, handle: "resume-mcp" });
+    return jsonResponse(404, { error: "NotFound" });
+  });
+  const store = new GatewaySessionStore({
+    onSet: async (value) => {
+      await Promise.resolve();
+      saved = value;
+    },
+  });
+  const first = new HavenGatewayBridge({ fetch: fetchImpl, store });
+  assertScrubbed(
+    await first.call("create_session", { handle: "resume-mcp", resumable: true }),
+    "create",
+  );
+  assertScrubbed(await first.call("leave", {}), "leave");
+  expect(store.hasSession()).toBe(false);
+  expect(store.getToken()).toBeNull();
+  expect(store.getResumeToken("resume-mcp")).toBe(continuation);
+  expect(store.getPublic()).not.toHaveProperty("resumeToken");
+  // A fresh adapter instance has only the persisted continuation, not a live access token.
+  const hydrated = new GatewaySessionStore();
+  hydrated.hydrate(saved);
+  const second = new HavenGatewayBridge({ fetch: fetchImpl, store: hydrated });
+  expect((await second.call("session_status", {})).content).toMatchObject({
+    open: false,
+    resumable: true,
+  });
+  assertScrubbed(
+    await second.call("create_session", { handle: "resume-mcp", resume: true }),
+    "resume",
+  );
+  expect(hydrated.getToken()).toBe("hvs_rotated_access_abcdefghijklmnop");
+  expect(hydrated.getResumeToken("resume-mcp")).toBe("hvr_" + "b".repeat(32));
+  expect(calls).toHaveLength(3);
+});
+
+it.each([409, 503])(
+  "keeps access when leave returns %s and forwards explicit force",
+  async (status) => {
+    const continuation = "hvr_" + "a".repeat(32);
+    const store = new GatewaySessionStore();
+    store.set({
+      sessionId: "ags_waiting",
+      handle: "waiting-mcp",
+      agentId: "agt_waiting",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      actions: ["handoff", "leave"],
+      sessionToken: SESSION_TOKEN,
+      resumeToken: continuation,
+    });
+    const { fetchImpl } = mockFetch(({ url, init }) => {
+      expect(url).toContain("/api/agent-session/leave");
+      const body = JSON.parse(String(init?.body));
+      if (!body.force)
+        return jsonResponse(status, {
+          error: status === 409 ? "WorkPending" : "DatabaseError",
+          message: "Session retained for pending work. Use force: true to leave now.",
+        });
+      return jsonResponse(200, { ok: true, handle: "waiting-mcp" });
+    });
+    const bridge = new HavenGatewayBridge({ fetch: fetchImpl, store });
+    const refused = await bridge.call("leave", {});
+    expect(refused.ok).toBe(false);
+    expect(store.getToken()).toBe(SESSION_TOKEN);
+    expect(store.getResumeToken("waiting-mcp")).toBe(continuation);
+    expect((await bridge.call("session_status", {})).content).toMatchObject({
+      open: true,
+    });
+    assertScrubbed(await bridge.call("leave", { force: true }), "forced leave");
+    expect(store.getToken()).toBeNull();
+  },
+);

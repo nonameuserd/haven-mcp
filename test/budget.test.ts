@@ -80,3 +80,12 @@ describe("SessionBudget", () => {
     expect(ipBucketKey("1.2.3.4")).not.toBe(ipBucketKey("1.2.3.5"));
   });
 });
+
+it("resumes an authenticated identity without taking another client's probe slot", () => {
+  const budget = new SessionBudget();
+  budget.admit("1.1.1.1", 1000);
+  budget.activate(false);
+  expect(budget.snapshot()).toMatchObject({ probeSessions: 1, activatedSessions: 1 });
+  budget.releaseActivated();
+  expect(budget.snapshot()).toMatchObject({ probeSessions: 1, activatedSessions: 0 });
+});

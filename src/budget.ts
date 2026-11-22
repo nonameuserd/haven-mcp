@@ -145,8 +145,8 @@ export class SessionBudget {
   }
 
   /** Probe obtained a Haven `hvs_…` session. Idempotent. */
-  activate(): void {
-    if (this.state.probeSessions > 0) {
+  activate(fromProbe = true): void {
+    if (fromProbe && this.state.probeSessions > 0) {
       this.state.probeSessions -= 1;
     }
     this.state.activatedSessions += 1;

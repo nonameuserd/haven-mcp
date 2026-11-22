@@ -75,3 +75,17 @@ describe("scrubSensitiveFields", () => {
     expect(toolResultLeaksSecrets(scrubbed)).toBe(false);
   });
 });
+
+it("scrubs continuation keys, embedded bearer text and errors", () => {
+  const secret = "hvr_" + "z".repeat(32);
+  const value = {
+    resumeToken: secret,
+    nested: { resume_token: secret },
+    text: `Never paste Haven-Resume ${secret}`,
+  };
+  expect(toolResultLeaksSecrets(value)).toBe(true);
+  const scrubbed = scrubSensitiveFields(value);
+  expect(toolResultLeaksSecrets(scrubbed)).toBe(false);
+  expect(JSON.stringify(scrubbed)).not.toContain(secret);
+  expect(scrubSensitiveText(`Rejected ${secret}`)).not.toContain(secret);
+});

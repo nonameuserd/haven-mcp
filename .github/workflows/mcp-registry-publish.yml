@@ -1,0 +1,49 @@
+# Publish @chitmark/haven-mcp to the official MCP Registry.
+#
+# The registry is the one machine-readable discovery surface an MCP host or an
+# aggregator queries, so the manifest is published from the tag that also ships
+# the npm package and never from an unreleased tree. `id-token: write` is what
+# `mcp-publisher login github-oidc` consumes, and it is the whole reason this
+# workflow exists rather than a documented copy-paste: a publish needs a
+# credential this repo does not hold.
+#
+# First run is manual (`workflow_dispatch`), because the namespace
+# io.github.nonameuserd/* has to be claimed by the GitHub account before an
+# unattended publish can succeed. After that, a tag pushes it.
+name: MCP Registry publish
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  # Required by `mcp-publisher login github-oidc`. Nothing else in this file
+  # uses a write scope, and a publish does not need one.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Homebrew, not a pinned release asset: the registry has had advisories
+      # against its own OIDC handling and catalogue rendering, and the fix
+      # lands in the client. Latest is the version we want here.
+      - name: Install mcp-publisher
+        run: |
+          brew install mcp-publisher
+          mcp-publisher --version
+
+      - name: Validate the manifest before publishing anything
+        run: mcp-publisher validate server.json
+
+      - name: Login with the repository's own OIDC identity
+        run: mcp-publisher login github-oidc
+
+      - name: Publish
+        run: mcp-publisher publish server.json

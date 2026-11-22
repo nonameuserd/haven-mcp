@@ -34,11 +34,17 @@ describe("capability boundary", () => {
     for (const tool of HAVEN_MCP_TOOLS) {
       const route = HAVEN_MCP_TOOL_GATEWAY[tool.name];
       expect(route, `${tool.name} gateway route`).toBeTruthy();
+      // M.2.1 and M.2.2 add the two World routes tools drive, named literally
+      // rather than as a `/api/worlds` prefix so this list cannot widen into
+      // approving every World surface: the point of the assertion is that each
+      // tool sits on a surface someone chose, not on a family of routes.
       expect(
         route.path === "local" ||
           route.path.startsWith("/api/agent-session") ||
           route.path === "/api/capabilities" ||
-          route.path === "/api/capabilities/rank",
+          route.path === "/api/capabilities/rank" ||
+          route.path === "/api/worlds/:id/join" ||
+          route.path === "/api/worlds",
         `${tool.name} route surface`,
       ).toBe(true);
     }

@@ -14,7 +14,7 @@ import {
   scrubSensitiveFields,
   scrubSensitiveText,
 } from "./session.js";
-import type { HavenMcpToolName } from "./tools.js";
+import { HAVEN_MCP_SERVER_VERSION, type HavenMcpToolName } from "./tools.js";
 
 export type HavenGatewayBridgeOptions = {
   /** Haven origin (default HAVEN_BASE_URL or https://haven.chitmark.com). */
@@ -48,13 +48,17 @@ export const wakeWaitDelayMs = (completedPolls: number): number => {
 export class HavenGatewayBridge {
   readonly store: GatewaySessionStore;
   private haven: Haven;
+  private baseUrl: string;
+  private fetchImpl: typeof fetch;
 
   constructor(opts: HavenGatewayBridgeOptions = {}) {
     this.store = opts.store ?? new GatewaySessionStore();
+    this.baseUrl = (opts.baseUrl ?? "https://haven.chitmark.com").replace(/\/+$/, "");
+    this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
     this.haven = new Haven({
       baseUrl: opts.baseUrl,
       fetch: opts.fetch,
-      clientName: "haven-mcp/0.1.0",
+      clientName: `haven-mcp/${HAVEN_MCP_SERVER_VERSION}`,
     });
   }
 
@@ -76,6 +80,7 @@ export class HavenGatewayBridge {
   ): Promise<ToolCallResult> {
     try {
       const content = await this.dispatch(name, args);
+      await this.store.flush();
       return { ok: true, content: scrubSensitiveFields(content) };
     } catch (e) {
       const raw =
@@ -122,6 +127,25 @@ export class HavenGatewayBridge {
       case "work":
         this.requireToken();
         return this.haven.gateway.work(args as unknown as GatewayWorkInput);
+      case "create_swarm":
+        this.requireToken();
+        return this.swarmCreate(args);
+      case "join_swarm":
+        this.requireToken();
+        return this.swarmJoin(args);
+      case "leave_swarm":
+        this.requireToken();
+        return this.swarmLeave(args);
+      case "renew_swarm":
+        this.requireToken();
+        return this.swarmRenew(args);
+      case "list_worlds":
+        // No session required, and that is the property: an agent decides where
+        // to go before it authenticates anywhere.
+        return this.worldList();
+      case "join_world":
+        this.requireToken();
+        return this.worldJoin(args);
       case "report_outcome":
         this.requireToken();
         return this.haven.gateway.outcome(args as unknown as GatewayOutcomeInput);
@@ -138,7 +162,7 @@ export class HavenGatewayBridge {
           wakeId: args.wakeId as string,
         });
       case "leave":
-        return this.leave();
+        return this.leave(args.forgetResume === true, args.force === true);
       default: {
         const _exhaustive: never = name;
         throw new HavenError(`Unknown tool: ${String(_exhaustive)}`, {
@@ -214,9 +238,11 @@ export class HavenGatewayBridge {
     if (!handle) {
       throw new HavenError("create_session requires handle", { code: "validation" });
     }
-    const input: GatewayOpenInput = {
+    const input: GatewayOpenInput & { resumable?: boolean; resume?: boolean } = {
       handle,
       delivery: "header",
+      ...(typeof args.resumable === "boolean" ? { resumable: args.resumable } : {}),
+      ...(typeof args.resume === "boolean" ? { resume: args.resume } : {}),
       ...(typeof args.shareLocation === "boolean"
         ? { shareLocation: args.shareLocation }
         : {}),
@@ -229,7 +255,33 @@ export class HavenGatewayBridge {
         ? { activity: args.activity as GatewayOpenInput["activity"] }
         : {}),
     };
-    const issued = await this.haven.gateway.open(input);
+    const continuation = args.resume === true ? this.store.getResumeToken(handle) : null;
+    if (args.resume === true && !continuation)
+      throw new HavenError(
+        "No live identity-resumption credential in this adapter. A handle alone cannot recover an identity.",
+        { code: "validation" },
+      );
+    const issued = (await this.readJsonResponse(
+      await this.fetchImpl(`${this.baseUrl}/api/agent-session`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          ...(continuation ? { Authorization: `Haven-Resume ${continuation}` } : {}),
+        },
+        body: JSON.stringify(input),
+      }),
+    )) as {
+      sessionId: string;
+      handle: string;
+      agentId: string;
+      expiresAt: string;
+      actions: string[];
+      sessionToken: string;
+      resumeToken?: string;
+    };
+    if (!issued.sessionToken)
+      throw new HavenError("Gateway returned no session token", { code: "validation" });
     this.store.set({
       sessionId: issued.sessionId,
       handle: issued.handle,
@@ -237,6 +289,7 @@ export class HavenGatewayBridge {
       expiresAt: issued.expiresAt,
       actions: issued.actions,
       sessionToken: issued.sessionToken,
+      ...(issued.resumeToken ? { resumeToken: issued.resumeToken } : {}),
     });
     // Public view only: never include sessionToken.
     return {
@@ -245,6 +298,8 @@ export class HavenGatewayBridge {
       agentId: issued.agentId,
       expiresAt: issued.expiresAt,
       actions: issued.actions,
+      resumable: !!issued.resumeToken,
+      resumed: args.resume === true,
       auth: {
         note: "Session token is held by the Haven MCP adapter. It is not returned to the host or model.",
       },
@@ -255,22 +310,191 @@ export class HavenGatewayBridge {
           "request_collaboration",
           "handoff",
           "work",
+          "create_swarm",
+          "join_swarm",
+          "leave_swarm",
+          "renew_swarm",
           "wake",
           "wake_wait",
           "wake_cancel",
           "leave",
         ],
-        why: "Use find_agent(discover:true) first, then look_around if needed, then find_agent or request_collaboration, then handoff list/claim_next + work; wake when idle, then leave.",
+        why: "Use find_agent(discover:true) first, then look_around if needed, then find_agent or request_collaboration, then handoff list/claim_next + work; open or join a swarm crew for multi-agent work (swarmId links packets and wakes); wake when idle, then leave.",
       },
     };
   }
 
   private sessionStatus(): unknown {
     const pub = this.store.getPublic();
-    if (!pub) {
-      return { open: false, note: "No Gateway session. Call create_session." };
+    if (!pub || !this.store.hasSession()) {
+      return {
+        open: false,
+        resumable: !!pub && !!this.store.getResumeToken(pub.handle),
+        note: "No Gateway session. Use create_session with resume: true only when this adapter retained a live continuation.",
+      };
     }
     return { open: true, ...pub };
+  }
+
+  /**
+   * REST over the gateway session (Haven-Session auth, never attestation).
+   * Thin 1:1 mapping onto a route; results are scrubbed by `call()`.
+   *
+   * Exists because the adapter cannot assume the published SDK wraps every route
+   * it drives: `@chitmark/haven-agent` resolves from the registry, so a World
+   * route added to the workspace SDK is invisible here until that version ships.
+   * Rather than block M.2.1 on a publish, this is the same one-request mapping
+   * the swarm tools already used, and it carries no identity of its own: the
+   * session token in the header is the caller, which is why no tool can pass
+   * someone else's handle here.
+   */
+  private async sessionRequest(
+    path: string,
+    method: "POST" | "GET" | "DELETE",
+    body?: Record<string, unknown>,
+  ): Promise<unknown> {
+    const token = this.requireToken();
+    return this.readJsonResponse(
+      await this.fetchImpl(`${this.baseUrl}${path}`, {
+        method,
+        headers: {
+          Accept: "application/json",
+          ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+          Authorization: `Haven-Session ${token}`,
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      }),
+    );
+  }
+
+  /**
+   * M.2.2: a directory read that needs no session.
+   *
+   * Deliberately sends no `Authorization` header at all, even when a session is
+   * open. `GET /api/worlds` is a public directory read and composes nothing from
+   * the caller, so attaching a token would imply the answer depends on who asked
+   * when it does not: it publishes each World's own admission, and the caller
+   * pairs that with its own identity. A header that promises caller-specific
+   * behaviour is a claim the route would then have to honour.
+   */
+  private async publicRequest(path: string): Promise<unknown> {
+    return this.readJsonResponse(
+      await this.fetchImpl(`${this.baseUrl}${path}`, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      }),
+    );
+  }
+
+  /** Parse one Haven response, turning a 4xx/5xx into a scrubbed `HavenApiError`. */
+  private async readJsonResponse(res: Response): Promise<unknown> {
+    const text = await res.text();
+    let parsed: unknown = null;
+    if (text) {
+      try {
+        parsed = JSON.parse(text) as unknown;
+      } catch {
+        parsed = text;
+      }
+    }
+    if (!res.ok) {
+      const b =
+        typeof parsed === "object" && parsed !== null
+          ? (parsed as { error?: string; message?: string })
+          : { message: String(parsed ?? `HTTP ${res.status}`) };
+      throw new HavenApiError(res.status, {
+        error: b.error,
+        message: b.message ?? b.error,
+      });
+    }
+    return parsed;
+  }
+
+  private async swarmCreate(args: Record<string, unknown>): Promise<unknown> {
+    const name = typeof args.name === "string" ? args.name : "";
+    const objective = typeof args.objective === "string" ? args.objective : "";
+    if (!name || !objective) {
+      throw new HavenError("create_swarm requires name and objective", {
+        code: "validation",
+      });
+    }
+    return this.sessionRequest("/api/agent-session/swarm", "POST", {
+      op: "create",
+      name,
+      objective,
+      ...(typeof args.attestedOnly === "boolean"
+        ? { attestedOnly: args.attestedOnly }
+        : {}),
+      ...(typeof args.maxMembers === "number" ? { maxMembers: args.maxMembers } : {}),
+    });
+  }
+
+  private swarmIdOf(args: Record<string, unknown>, tool: string): string {
+    const id = typeof args.swarmId === "string" ? args.swarmId.trim() : "";
+    if (!id) {
+      throw new HavenError(`${tool} requires swarmId`, { code: "validation" });
+    }
+    return id;
+  }
+
+  private async swarmJoin(args: Record<string, unknown>): Promise<unknown> {
+    return this.sessionRequest("/api/agent-session/swarm", "POST", {
+      op: "join",
+      swarmId: this.swarmIdOf(args, "join_swarm"),
+    });
+  }
+
+  private async swarmLeave(args: Record<string, unknown>): Promise<unknown> {
+    return this.sessionRequest("/api/agent-session/swarm", "POST", {
+      op: "leave",
+      swarmId: this.swarmIdOf(args, "leave_swarm"),
+    });
+  }
+
+  private async swarmRenew(args: Record<string, unknown>): Promise<unknown> {
+    return this.sessionRequest("/api/agent-session/swarm", "POST", {
+      op: "renew",
+      swarmId: this.swarmIdOf(args, "renew_swarm"),
+    });
+  }
+
+  /**
+   * M.2.1: drop into an existing World, identity from the session.
+   *
+   * The SDK call, not a hand-built fetch, because `Haven.world.join` is where
+   * the identity requirement lives and a second fetch path here would be a second
+   * place to forget it. Role is passed through only when the caller asked for
+   * one, so the server default (member) stays the server's decision.
+   */
+  /**
+   * M.2.2: the ledger read, one row per live World.
+   *
+   * Thin pass-through on purpose. The adapter does not filter to enterable rows
+   * or reshape the admission terms: a second interpretation here would be a
+   * second catalogue that can disagree with `GET /api/worlds`, which is the one
+   * read the item names.
+   */
+  private async worldList(): Promise<unknown> {
+    return this.publicRequest("/api/worlds");
+  }
+
+  private async worldJoin(args: Record<string, unknown>): Promise<unknown> {
+    const worldId = typeof args.worldId === "string" ? args.worldId.trim() : "";
+    if (!worldId) {
+      throw new HavenError("join_world needs a worldId.", { code: "validation" });
+    }
+    const role =
+      args.role === "member" || args.role === "observer" ? args.role : undefined;
+    // No handle and no agentId in the body, ever. Identity is the session, so a
+    // prompt that puts someone else's handle in the arguments has nowhere to put
+    // it.
+    return this.sessionRequest(
+      `/api/worlds/${encodeURIComponent(worldId)}/join`,
+      "POST",
+      {
+        ...(role ? { role } : {}),
+      },
+    );
   }
 
   /**
@@ -299,6 +523,9 @@ export class HavenGatewayBridge {
       ...(typeof args.maxEvents === "number" ? { maxEvents: args.maxEvents } : {}),
       ...(typeof args.consume === "boolean" ? { consume: args.consume } : {}),
     };
+    if (typeof args.swarmId === "string" && args.swarmId.trim().length > 0) {
+      (input as unknown as Record<string, unknown>).swarmId = args.swarmId.trim();
+    }
     return this.haven.gateway.wake(input);
   }
 
@@ -397,17 +624,39 @@ export class HavenGatewayBridge {
     }
   }
 
-  private async leave(): Promise<unknown> {
+  private async leave(forgetResume = false, force = false): Promise<unknown> {
     if (!this.store.hasSession()) {
+      if (forgetResume && this.store.getPublic())
+        throw new HavenError(
+          "Resume first, then leave with forgetResume: true to revoke continuation server-side.",
+          { code: "validation" },
+        );
       return { ok: true, note: "No session was open." };
     }
     this.requireToken();
     try {
-      const left = await this.haven.gateway.leave();
-      this.store.clear();
-      return { ok: true, handle: left.handle };
+      const left = (await this.sessionRequest("/api/agent-session/leave", "POST", {
+        forgetResume,
+        force,
+      })) as unknown as {
+        ok: true;
+        handle: string;
+        receipt?: unknown;
+      };
+      this.store.endSession(forgetResume);
+      // Resume receipt: swarms, held packets and intents, wakes, trails,
+      // expiries, returnTo paths, docs pointers. Scrubbed by call().
+      return {
+        ok: true,
+        handle: left.handle,
+        resumable: !!this.store.getResumeToken(left.handle),
+        ...(left.receipt !== undefined ? { receipt: left.receipt } : {}),
+      };
     } catch (e) {
-      this.store.clear();
+      if (e instanceof HavenApiError && e.status === 401) {
+        this.store.endSession();
+        await this.store.flush();
+      }
       throw e;
     }
   }
