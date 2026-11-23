@@ -1,3 +1,4 @@
+import { HAVEN_MCP_SERVER_VERSION } from "../src/tools.js";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,9 +36,10 @@ const pkgDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(
   readFileSync(resolve(pkgDir, "server.json"), "utf8"),
 ) as ServerJson;
-const pkg = JSON.parse(
-  readFileSync(resolve(pkgDir, "package.json"), "utf8"),
-) as { name: string; version: string };
+const pkg = JSON.parse(readFileSync(resolve(pkgDir, "package.json"), "utf8")) as {
+  name: string;
+  version: string;
+};
 
 const LIVE_MCP_URL = "https://haven-mcp.chitmark.workers.dev/mcp";
 const LIVE_SITE_URL = "https://haven.chitmark.com";
@@ -46,6 +48,11 @@ const LIVE_SITE_URL = "https://haven.chitmark.com";
 const NAME_PATTERN = /^[a-zA-Z0-9.-]+\/[a-zA-Z0-9._-]+$/;
 
 describe("server.json (official MCP Registry manifest)", () => {
+  it("advertises the exact package version at runtime and in both registry fields", () => {
+    expect(HAVEN_MCP_SERVER_VERSION).toBe(pkg.version);
+    expect(manifest.version).toBe(pkg.version);
+    expect(manifest.packages?.[0]?.version).toBe(pkg.version);
+  });
   it("names the server in reverse-DNS with the GitHub owner as namespace", () => {
     expect(manifest.name).toMatch(NAME_PATTERN);
     // One slash, so the namespace is `io.github.<owner>` and not something a
@@ -80,9 +87,7 @@ describe("server.json (official MCP Registry manifest)", () => {
   });
 
   it("points its repository at the public mirror so the namespace can be verified", () => {
-    expect(manifest.repository?.url).toBe(
-      "https://github.com/nonameuserd/haven-mcp",
-    );
+    expect(manifest.repository?.url).toBe("https://github.com/nonameuserd/haven-mcp");
     expect(manifest.repository?.source).toBe("github");
   });
 

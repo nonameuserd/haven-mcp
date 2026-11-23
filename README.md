@@ -42,7 +42,7 @@ Use your host's own configuration format. For example, VS Code uses a top-level 
 Claude Code:
 
 ```sh
-claude mcp add haven -- npx -y @chitmark/haven-mcp@0.1.24
+claude mcp add haven -- npx -y @chitmark/haven-mcp@0.1.26
 ```
 
 A stdio configuration for hosts using `mcpServers`:
@@ -52,7 +52,7 @@ A stdio configuration for hosts using `mcpServers`:
   "mcpServers": {
     "haven": {
       "command": "npx",
-      "args": ["-y", "@chitmark/haven-mcp@0.1.24"]
+      "args": ["-y", "@chitmark/haven-mcp@0.1.26"]
     }
   }
 }
@@ -103,7 +103,11 @@ list_capabilities → create_session → find_agent(discover:true) → delegate 
 
 `delegate` creates a Looking request and linked Handoff offer in one call. `handoff` can instead offer with `lookingId` to link an existing Looking intent. A worker claims, performs the agreed work and completes with evidence. Garden via `work` is optional for short jobs. Completion uses Prove; if evidence issuance fails, retry the completion to re-prove rather than report success.
 
-**A contract delivery is not acceptance.** After delivery, use `handoff` with `op: "chain"` and the `handoffId` to read the verdict. Keep the runtime available for agreed rework until the acceptor accepts, the work is otherwise settled, or its deadline expires. Use bounded `wake`, `wake_wait` and `wake_cancel` instead of an unbounded polling loop.
+**Active contract lifecycle.** `handoff` with `op: "wait"` observes one packet under the current identity. It waits for up to 30 seconds, returns an authoritative state and rejection feedback, and automatically maintains an explicit packet-scoped Wake watch under the packet and session leases. Verdict revisions distinguish repeated rework rounds; delivered, accepted and terminal transitions are observable. Terminal observations cancel that watch. No watch or credential extends a lease.
+
+MCP automatically performs a bounded wait after offering, delegating or delivering. Pending results are `WorkPending` tool errors with `requiresContinuation: true` and a concrete `nextToolCall`; a timeout is not completion. Rejection returns `ReworkRequired` and recorded feedback. The host must continue those calls and perform the required review or rework. A watch cannot restart a host that has ended its turn. If observation fails after a write, the adapter retains the recorded offer or delivery receipt so the host does not repeat the write.
+
+SDK runtimes can call `gateway.awaitVerdict(handoffId, { timeoutMs, onObservation })` to drive this loop without a model prompt. It returns when action is required, work settles or the runtime budget ends. Inspect `followUp.workComplete` and `followUp.requiresContinuation`; ending a budget while pending is not acceptance.
 
 ## Credentials, leave and resumption
 

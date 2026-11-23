@@ -379,7 +379,9 @@ describe("HavenGatewayBridge", () => {
       summary: "Review the yield summary with enough length",
       nextIntent: "Return a short note",
     });
-    assertScrubbed(result, "delegate");
+    expect(result.ok).toBe(false);
+    expect(toolResultLeaksSecrets(result.content)).toBe(false);
+    expect(result.content).toMatchObject({ offerRecorded: true });
     expect((result.content as { action: string }).action).toBe("delegate");
     expect((result.content as { friction: string }).friction).toBe("collapsed");
     expect((result.content as { packet: { lookingId: string } }).packet.lookingId).toBe(
@@ -954,7 +956,9 @@ describe("HavenGatewayBridge", () => {
       nextIntent: "Continue coding ticks from yield",
       requiredSkills: ["coding"],
     });
-    assertScrubbed(offered, "handoff offer");
+    expect(offered.ok).toBe(false);
+    expect(toolResultLeaksSecrets(offered.content)).toBe(false);
+    expect(offered.content).toMatchObject({ offerRecorded: true });
     const offeredPacket = (offered.content as { packet: { id: string; status: string } })
       .packet;
     expect(offeredPacket.status).toBe("open");
@@ -1019,6 +1023,7 @@ describe("HavenGatewayBridge", () => {
       "claim_next",
       "complete",
       "offer",
+      "wait",
       "claim",
     ]);
   });
@@ -1337,4 +1342,101 @@ it("preserves HTTP refusal classification without exposing response secrets", as
   });
   expect(result.errorDetails).toEqual({ status: 400, code: "SecretDetected" });
   expect(toolResultLeaksSecrets(result)).toBe(false);
+});
+
+it.each(["awaiting_verdict", "rework_required", "accepted"])(
+  "owns the post-delivery wait and exposes %s accurately",
+  async (state) => {
+    const calls: string[] = [];
+    const store = new GatewaySessionStore();
+    store.set({
+      sessionId: "lifecycle",
+      agentId: "agt_lifecycle",
+      handle: "lifecycle",
+      expiresAt: "2099-01-01T00:00:00Z",
+      sessionToken: SESSION_TOKEN,
+      actions: [],
+    });
+    const bridge = new HavenGatewayBridge({
+      store,
+      fetch: (async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        calls.push(body.op);
+        if (body.op === "complete")
+          return jsonResponse(200, {
+            delivered: true,
+            packet: { id: "hnd_lifecycle", status: "delivered" },
+          });
+        return jsonResponse(200, {
+          handoffId: "hnd_lifecycle",
+          followUp: {
+            state,
+            workComplete: state === "accepted",
+            requiresContinuation: state === "awaiting_verdict",
+            requiresAction: state === "rework_required",
+          },
+          nextToolCall: {
+            name: "handoff",
+            arguments: {
+              op: state === "rework_required" ? "complete" : "wait",
+              handoffId: "hnd_lifecycle",
+            },
+          },
+          ...(state === "rework_required"
+            ? { feedback: { summary: "Add the observed headers", id: "ev_verdict" } }
+            : {}),
+        });
+      }) as typeof fetch,
+    });
+    const result = await bridge.call("handoff", {
+      op: "complete",
+      handoffId: "hnd_lifecycle",
+      evidenceNote: "A checked delivery",
+      timeoutSeconds: 0,
+    });
+    expect(calls).toEqual(["complete", "wait"]);
+    expect(result.ok).toBe(state === "accepted");
+    expect((result.content as { deliveryRecorded: boolean }).deliveryRecorded).toBe(true);
+    if (state === "awaiting_verdict")
+      expect(result.errorDetails?.code).toBe("WorkPending");
+    if (state === "rework_required")
+      expect(result.errorDetails?.code).toBe("ReworkRequired");
+    expect(store.getToken()).toBe(SESSION_TOKEN);
+  },
+);
+
+it("retains the delivery receipt when observation fails after submission", async () => {
+  const store = new GatewaySessionStore();
+  store.set({
+    sessionId: "lifecycle",
+    agentId: "agt_lifecycle",
+    handle: "lifecycle",
+    expiresAt: "2099-01-01T00:00:00Z",
+    sessionToken: SESSION_TOKEN,
+    actions: [],
+  });
+  const bridge = new HavenGatewayBridge({
+    store,
+    fetch: (async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      return body.op === "complete"
+        ? jsonResponse(200, {
+            delivered: true,
+            packet: { id: "hnd_lifecycle", status: "delivered" },
+          })
+        : jsonResponse(503, { error: "DatabaseError", message: "Store unavailable" });
+    }) as typeof fetch,
+  });
+  const result = await bridge.call("handoff", {
+    op: "complete",
+    handoffId: "hnd_lifecycle",
+    evidenceNote: "A checked delivery",
+    timeoutSeconds: 0,
+  });
+  expect(result.ok).toBe(false);
+  expect(result.content).toMatchObject({
+    deliveryRecorded: true,
+    waitError: { status: 503 },
+    nextToolCall: { arguments: { op: "wait" } },
+  });
 });

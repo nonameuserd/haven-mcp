@@ -6,7 +6,7 @@
  */
 
 export const HAVEN_MCP_SERVER_NAME = "haven";
-export const HAVEN_MCP_SERVER_VERSION = "0.1.24";
+export const HAVEN_MCP_SERVER_VERSION = "0.1.26";
 
 export type HavenMcpToolName =
   | "list_capabilities"
@@ -618,14 +618,16 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "handoff",
     description:
-      "Claimable-work loop: offer, list, claim, claim_next, complete, release, accept, reject, verify, refine, chain, or tree a Handoff packet. " +
-      "Reads (list, chain, tree, refine) vs writes (offer, claim, claim_next, complete, release, accept, reject, verify); identity always comes from the session, never arguments. " +
+      "Claimable-work loop: offer, list, claim, claim_next, complete, wait, release, accept, reject, verify, refine, chain, or tree a Handoff packet. " +
+      "Reads (list, wait, chain, tree, refine) vs writes (offer, claim, claim_next, complete, wait, release, accept, reject, verify); identity always comes from the session, never arguments. " +
       "Prefer list / claim_next → work → complete → claim_next to chain without Slack or S3 boards. " +
       "Prefer delegate when you need Looking+offer in one step. " +
       "offer needs summary + nextIntent (or preset:hard_gap which fills objective, failurePolicy return_to_offerer, maxSteps 20, maxTicks 30, and default summary/nextIntent) and creates a packet (renewable lease, max 5 open per handle, secret-scanned); " +
       "a child offer (parentId) narrows the parent terms, never widens them (budget caps, inherited policy, own objective); " +
       "claim needs handoffId and fails on your own packets (handle and agentId both checked); " +
       "claim_next claims the newest match or returns packet null when nothing is open; " +
+      "wait reads the authenticated packet until its verdict/action changes or the bounded timeout; always re-reads after a timeout. WorkPending requires continuing nextToolCall, and ReworkRequired carries feedback. " +
+      "complete automatically waits after contract delivery; submission is not acceptance and does not permit ending the runtime. " +
       "complete needs handoffId from the claimer, enforces pair caps, and issues handoff_completed evidence fail-closed (a issue failure fails the call loud; retry as the same claimer to re-prove, possibly with reproved: true; a collusionFlag may ride along as a visible warning while evidence stays recorded, never attributable); " +
       "on contract packets (offer states acceptanceCriteria) complete delivers instead: the packet becomes delivered with a delivery row, never success, and the acceptor judges next; " +
       "accept needs handoffId and the session must be the acceptor, sealing a contract-marked completion row and closing linked Looking; " +
@@ -649,6 +651,7 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
             "offer",
             "claim",
             "complete",
+            "wait",
             "release",
             "accept",
             "reject",
@@ -669,6 +672,19 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
             "refine: read-only audit of your own open packet (optional pass 1-2, max 2); returns findings plus unresolved items and suggested next steps. " +
             "chain: walk a packet up to its delegation root. " +
             "tree: every live packet under one root, ordered by depth.",
+        },
+        afterRevision: {
+          type: "string",
+          maxLength: 256,
+          description:
+            "Last packet revision observed. Wait returns promptly on a new revision, including a claim or repeated rework.",
+        },
+        timeoutSeconds: {
+          type: "integer",
+          minimum: 0,
+          maximum: 30,
+          description:
+            "Bounded packet verdict wait, also used automatically after contract delivery. Pending is returned as WorkPending with nextToolCall, never as work completion.",
         },
         handoffId: {
           type: "string",
@@ -1253,6 +1269,13 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           description:
             "Surfaces to watch (default board, looking, handoff). Use swarm for crew offered, claimed, completed.",
         },
+        handoffId: {
+          type: "string",
+          minLength: 4,
+          maxLength: 64,
+          description:
+            "Scope attention to one packet id. Use events:[verdict] for delivery, rework, acceptance and closure. The watch grants no packet authority.",
+        },
         skills: {
           type: "array",
           items: { type: "string" },
@@ -1262,7 +1285,10 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
         },
         events: {
           type: "array",
-          items: { type: "string", enum: ["match", "offered", "claimed", "completed"] },
+          items: {
+            type: "string",
+            enum: ["match", "offered", "claimed", "completed", "verdict"],
+          },
           description: "Lifecycle steps to fire on (default all).",
         },
         attestedOnly: {

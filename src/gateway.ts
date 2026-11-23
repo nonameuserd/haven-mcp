@@ -86,6 +86,40 @@ export class HavenGatewayBridge {
     try {
       const content = await this.dispatch(name, args);
       await this.store.flush();
+      const observation = content as {
+        followUp?: {
+          requiresContinuation?: boolean;
+          requiresAction?: boolean;
+          state?: string;
+        };
+      } | null;
+      if (
+        observation?.followUp?.requiresContinuation ||
+        observation?.followUp?.state === "rework_required" ||
+        observation?.followUp?.state === "observation_unavailable"
+      ) {
+        const rework = observation.followUp.state === "rework_required";
+        const blocked =
+          observation.followUp.state === "observation_unavailable" &&
+          observation.followUp.requiresAction;
+        return {
+          ok: false,
+          content: scrubSensitiveFields(content),
+          error: rework
+            ? "ReworkRequired: delivery was rejected. Correct the work using the recorded feedback and remaining rounds."
+            : blocked
+              ? "ObservationBlocked: the write was recorded, but verdict access needs attention. Inspect session_status and the fixed waitError before continuing."
+              : "WorkPending: this lifecycle still needs attention. Continue the nextToolCall packet wait; submission and timeout are not acceptance or permission to end the runtime.",
+          errorDetails: {
+            status: rework || blocked ? 409 : 202,
+            code: rework
+              ? "ReworkRequired"
+              : blocked
+                ? "ObservationBlocked"
+                : "WorkPending",
+          },
+        };
+      }
       return { ok: true, content: scrubSensitiveFields(content) };
     } catch (e) {
       const raw =
@@ -138,10 +172,10 @@ export class HavenGatewayBridge {
         );
       case "delegate":
         this.requireToken();
-        return this.haven.gateway.delegate(args as never);
+        return this.handoffLifecycle(args, true);
       case "handoff":
         this.requireToken();
-        return this.haven.gateway.handoff(args as unknown as GatewayHandoffInput);
+        return this.handoffLifecycle(args);
       case "work":
         this.requireToken();
         return this.haven.gateway.work(args as unknown as GatewayWorkInput);
@@ -249,6 +283,70 @@ export class HavenGatewayBridge {
       ...(policy ? { policy } : {}),
       ...(task !== undefined ? { task } : {}),
     });
+  }
+
+  private async handoffLifecycle(
+    args: Record<string, unknown>,
+    delegate = false,
+  ): Promise<unknown> {
+    const result = delegate
+      ? await this.haven.gateway.delegate(args as never)
+      : await this.haven.gateway.handoff(args as unknown as GatewayHandoffInput);
+    const packet = result.packet as { id?: string; status?: string } | undefined;
+    if (
+      ((args.op === "complete" &&
+        result.delivered === true &&
+        packet?.status === "delivered") ||
+        args.op === "offer" ||
+        delegate) &&
+      packet?.id
+    ) {
+      try {
+        const observation = await this.haven.gateway.handoff({
+          op: "wait",
+          handoffId: packet.id,
+          timeoutSeconds:
+            typeof args.timeoutSeconds === "number"
+              ? Math.min(30, Math.max(0, args.timeoutSeconds))
+              : 20,
+        });
+        return {
+          ...observation,
+          ...(args.op === "offer" || delegate
+            ? { offerRecorded: true, offer: result }
+            : { deliveryRecorded: true, delivery: result }),
+        };
+      } catch (error) {
+        const retryable =
+          !(error instanceof HavenApiError) ||
+          error.status >= 500 ||
+          error.status === 429;
+        return {
+          ...result,
+          ...(args.op === "offer" || delegate
+            ? { offerRecorded: true }
+            : { deliveryRecorded: true }),
+          workComplete: false,
+          followUp: {
+            state: "observation_unavailable",
+            workComplete: false,
+            requiresContinuation: retryable,
+            requiresAction: !retryable,
+          },
+          waitError:
+            error instanceof HavenApiError
+              ? { status: error.status, code: error.error }
+              : { code: "TransportError" },
+          nextToolCall: retryable
+            ? {
+                name: "handoff",
+                arguments: { op: "wait", handoffId: packet.id, timeoutSeconds: 20 },
+              }
+            : { name: "session_status", arguments: {} },
+        };
+      }
+    }
+    return result;
   }
 
   private async createSession(args: Record<string, unknown>): Promise<unknown> {
