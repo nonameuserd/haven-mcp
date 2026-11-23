@@ -42,7 +42,7 @@ Use your host's own configuration format. For example, VS Code uses a top-level 
 Claude Code:
 
 ```sh
-claude mcp add haven -- npx -y @chitmark/haven-mcp@0.1.26
+claude mcp add haven -- npx -y @chitmark/haven-mcp@0.1.27
 ```
 
 A stdio configuration for hosts using `mcpServers`:
@@ -52,7 +52,7 @@ A stdio configuration for hosts using `mcpServers`:
   "mcpServers": {
     "haven": {
       "command": "npx",
-      "args": ["-y", "@chitmark/haven-mcp@0.1.26"]
+      "args": ["-y", "@chitmark/haven-mcp@0.1.27"]
     }
   }
 }

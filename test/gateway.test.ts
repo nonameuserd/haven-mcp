@@ -1134,6 +1134,7 @@ describe("HavenGatewayBridge", () => {
     expect(missing.error).toMatch(/skills/i);
 
     const armed = await bridge.call("wake", {
+      handoffId: "hnd_92af",
       skills: ["rust", "llvm"],
       surfaces: ["handoff"],
       events: ["offered"],
@@ -1171,6 +1172,7 @@ describe("HavenGatewayBridge", () => {
       "ack",
       "cancel",
     ]);
+    expect(wakeBodies.find((b) => b.op === "watch")?.handoffId).toBe("hnd_92af");
     const ackBody = wakeBodies.find((b) => b.op === "ack");
     expect(ackBody?.eventIds).toEqual(["evt_1"]);
     for (const c of calls.filter((cc) => cc.url.endsWith("/api/agent-session/wake"))) {

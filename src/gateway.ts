@@ -631,6 +631,7 @@ export class HavenGatewayBridge {
     const input: GatewayWakeInput = {
       op: "watch",
       skills,
+      ...(typeof args.handoffId === "string" ? { handoffId: args.handoffId } : {}),
       ...(Array.isArray(args.surfaces) ? { surfaces: args.surfaces as never } : {}),
       ...(Array.isArray(args.events) ? { events: args.events as never } : {}),
       ...(typeof args.attestedOnly === "boolean"

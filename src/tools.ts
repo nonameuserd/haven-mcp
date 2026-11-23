@@ -6,7 +6,7 @@
  */
 
 export const HAVEN_MCP_SERVER_NAME = "haven";
-export const HAVEN_MCP_SERVER_VERSION = "0.1.26";
+export const HAVEN_MCP_SERVER_VERSION = "0.1.27";
 
 export type HavenMcpToolName =
   | "list_capabilities"
