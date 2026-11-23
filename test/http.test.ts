@@ -60,7 +60,8 @@ const mcpPost = async (
   try {
     parsed = JSON.parse(text);
   } catch {
-    /* SSE or empty */
+    const data = text.split("\n").find((line) => line.startsWith("data:"));
+    if (data) parsed = JSON.parse(data.slice(5).trim());
   }
   return { status: res.status, headers: res.headers, json: parsed };
 };
@@ -203,118 +204,143 @@ describe("createHavenMcpHttpHandler (Streamable HTTP)", () => {
     expect(statusText).not.toMatch(/\bhvs_/);
   });
 
-  it("persists Haven tokens via durable hooks across slot recreate", async () => {
-    const { fetchImpl } = mockGatewayFetch();
-    const kv = new Map<string, unknown>();
-    const durable = {
-      load: async (id: string) => (kv.get(id) as never) ?? null,
-      save: async (id: string, session: unknown) => {
-        kv.set(id, session);
-      },
-      clear: async (id: string) => {
-        kv.delete(id);
-      },
-    };
-    handler = createHavenMcpHttpHandler({
-      baseUrl: "https://haven.test",
-      fetch: fetchImpl,
-      durable,
-    });
-
-    const init = await mcpPost(handler, {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: {
-        protocolVersion: "2024-11-05",
-        capabilities: {},
-        clientInfo: { name: "durable-test", version: "0.0.0" },
-      },
-    });
-    const sessionId = init.headers.get("mcp-session-id")!;
-    await handler.fetch(
-      new Request("http://127.0.0.1:8789/mcp", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "mcp-session-id": sessionId,
+  it.each([true, false])(
+    "restores concurrent cold requests without client reinitialization or a new identity (JSON=%s)",
+    async (enableJsonResponse) => {
+      const { fetchImpl } = mockGatewayFetch();
+      const kv = new Map<string, unknown>();
+      let loads = 0;
+      const durable = {
+        load: async (id: string) => {
+          loads++;
+          await Promise.resolve();
+          return (kv.get(id) as never) ?? null;
         },
-        body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
-      }),
-    );
-    await mcpPost(
-      handler,
-      {
+        save: async (id: string, session: unknown) => {
+          kv.set(id, session);
+        },
+        clear: async (id: string) => {
+          kv.delete(id);
+        },
+      };
+      handler = createHavenMcpHttpHandler({
+        baseUrl: "https://haven.test",
+        fetch: fetchImpl,
+        enableJsonResponse,
+        durable,
+      });
+
+      const init = await mcpPost(handler, {
         jsonrpc: "2.0",
-        id: 2,
-        method: "tools/call",
-        params: { name: "create_session", arguments: { handle: "http-bot" } },
-      },
-      sessionId,
-    );
-    expect(kv.has(sessionId)).toBe(true);
-    const stored = kv.get(sessionId) as { sessionToken: string };
-    expect(stored.sessionToken).toMatch(/^hvs_/);
-
-    // Simulate isolate wake: close in-memory MCP slots, keep durable KV.
-    await handler.close();
-    handler = createHavenMcpHttpHandler({
-      baseUrl: "https://haven.test",
-      fetch: fetchImpl,
-      durable,
-    });
-
-    // MCP protocol must re-initialize; reuse the same slot id so durable Haven
-    // tokens hydrate (no second create_session / Gateway open).
-    const reinit = await handler.fetch(
-      new Request("http://127.0.0.1:8789/mcp", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json, text/event-stream",
-          "x-haven-mcp-slot-id": sessionId,
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "durable-test", version: "0.0.0" },
         },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 10,
-          method: "initialize",
-          params: {
-            protocolVersion: "2024-11-05",
-            capabilities: {},
-            clientInfo: { name: "durable-test", version: "0.0.1" },
+      });
+      const sessionId = init.headers.get("mcp-session-id")!;
+      await handler.fetch(
+        new Request("http://127.0.0.1:8789/mcp", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "mcp-session-id": sessionId,
           },
+          body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
         }),
-      }),
-    );
-    expect(reinit.status).toBe(200);
-    expect(reinit.headers.get("mcp-session-id")).toBe(sessionId);
-    await handler.fetch(
-      new Request("http://127.0.0.1:8789/mcp", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "mcp-session-id": sessionId,
+      );
+      await mcpPost(
+        handler,
+        {
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "create_session", arguments: { handle: "http-bot" } },
         },
-        body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
-      }),
-    );
+        sessionId,
+      );
+      expect(kv.has(sessionId)).toBe(true);
+      const stored = kv.get(sessionId) as { sessionToken: string };
+      expect(stored.sessionToken).toMatch(/^hvs_/);
 
-    const status = await mcpPost(
-      handler,
-      {
-        jsonrpc: "2.0",
-        id: 3,
-        method: "tools/call",
-        params: { name: "session_status", arguments: {} },
+      // Simulate isolate wake: close in-memory MCP slots, keep durable KV.
+      await handler.close();
+      handler = createHavenMcpHttpHandler({
+        baseUrl: "https://haven.test",
+        fetch: fetchImpl,
+        enableJsonResponse,
+        durable,
+      });
+
+      const before = loads;
+      const [status, listed] = await Promise.all([
+        mcpPost(
+          handler,
+          {
+            jsonrpc: "2.0",
+            id: 3,
+            method: "tools/call",
+            params: { name: "session_status", arguments: {} },
+          },
+          sessionId,
+        ),
+        mcpPost(
+          handler,
+          { jsonrpc: "2.0", id: 4, method: "tools/list", params: {} },
+          sessionId,
+        ),
+      ]);
+      expect(status.status).toBe(200);
+      expect(listed.status).toBe(200);
+      expect(loads - before).toBe(1);
+      expect(handler.sessionCount()).toBe(1);
+      expect((kv.get(sessionId) as { protocolVersion: string }).protocolVersion).toBe(
+        "2024-11-05",
+      );
+      const statusObj = JSON.parse(extractToolText(status.json)) as {
+        open: boolean;
+        handle?: string;
+      };
+      expect(statusObj.open).toBe(true);
+      expect(statusObj.handle).toBe("http-bot");
+      expect(toolResultLeaksSecrets(statusObj)).toBe(false);
+    },
+  );
+});
+
+it("refuses unknown and expired cold session ids without allocating slots", async () => {
+  const cleared: string[] = [];
+  const handler = createHavenMcpHttpHandler({
+    durable: {
+      load: async (id) =>
+        id === "expired"
+          ? {
+              sessionId: "old",
+              handle: "old",
+              agentId: "old",
+              actions: [],
+              sessionToken: "hvs_expired_fixture",
+              expiresAt: "2000-01-01T00:00:00Z",
+            }
+          : null,
+      save: async () => {},
+      clear: async (id) => {
+        cleared.push(id);
       },
-      sessionId,
-    );
-    const statusObj = JSON.parse(extractToolText(status.json)) as {
-      open: boolean;
-      handle?: string;
-    };
-    expect(statusObj.open).toBe(true);
-    expect(statusObj.handle).toBe("http-bot");
-    expect(toolResultLeaksSecrets(statusObj)).toBe(false);
+    },
   });
+  for (const id of ["unknown", "expired"]) {
+    const response = await mcpPost(
+      handler,
+      { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} },
+      id,
+    );
+    expect(response.status).toBe(404);
+    expect(JSON.stringify(response.json)).not.toContain("hvs_");
+  }
+  expect(cleared).toEqual(["expired"]);
+  expect(handler.sessionCount()).toBe(0);
+  await handler.close();
 });

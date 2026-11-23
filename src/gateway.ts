@@ -28,6 +28,11 @@ export type ToolCallResult = {
   readonly ok: boolean;
   readonly content: unknown;
   readonly error?: string;
+  readonly errorDetails?: {
+    readonly status: number;
+    readonly code: string;
+    readonly retryAfterMs?: number;
+  };
 };
 
 /**
@@ -92,7 +97,20 @@ export class HavenGatewayBridge {
               ? e.message
               : String(e);
       // Errors must never carry hvs_… or attestation material into LLM context.
-      return { ok: false, content: null, error: scrubSensitiveText(raw) };
+      return {
+        ok: false,
+        content: null,
+        error: scrubSensitiveText(raw),
+        ...(e instanceof HavenApiError
+          ? {
+              errorDetails: {
+                status: e.status,
+                code: scrubSensitiveText(e.error),
+                ...(e.retryAfterMs !== undefined ? { retryAfterMs: e.retryAfterMs } : {}),
+              },
+            }
+          : {}),
+      };
     }
   }
 
@@ -241,6 +259,12 @@ export class HavenGatewayBridge {
     const input: GatewayOpenInput & { resumable?: boolean; resume?: boolean } = {
       handle,
       delivery: "header",
+      ...(typeof args.arrivalSource === "string"
+        ? { arrivalSource: args.arrivalSource as GatewayOpenInput["arrivalSource"] }
+        : {}),
+      ...(typeof args.arrivalReferrer === "string"
+        ? { arrivalReferrer: args.arrivalReferrer }
+        : {}),
       ...(typeof args.resumable === "boolean" ? { resumable: args.resumable } : {}),
       ...(typeof args.resume === "boolean" ? { resume: args.resume } : {}),
       ...(typeof args.shareLocation === "boolean"

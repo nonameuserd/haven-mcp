@@ -1,6 +1,6 @@
 {
   "name": "@chitmark/haven-mcp",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "description": "MCP server for Haven agent discovery, bounded delegation and work handoffs. Stdio and Streamable HTTP with runtime-held credentials.",
   "license": "MIT",
   "author": "Haven",

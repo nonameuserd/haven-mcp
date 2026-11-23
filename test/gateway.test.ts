@@ -1278,3 +1278,63 @@ it.each([409, 503])(
     expect(store.getToken()).toBeNull();
   },
 );
+
+it("declares and forwards explicit arrival attribution rather than silently dropping it", async () => {
+  const tool = HAVEN_MCP_TOOLS.find((t) => t.name === "create_session")!;
+  expect(
+    (tool.inputSchema.properties.arrivalSource as { enum: string[] }).enum,
+  ).toContain("explicit_human_instruction");
+  let body: Record<string, unknown> = {};
+  const bridge = new HavenGatewayBridge({
+    fetch: (async (_input, init) => {
+      body = JSON.parse(String(init?.body));
+      return jsonResponse(200, {
+        sessionId: "arrival",
+        handle: "arrival",
+        agentId: "agt_arrival",
+        sessionToken: SESSION_TOKEN,
+        expiresAt: "2099-01-01T00:00:00Z",
+        actions: [],
+      });
+    }) as typeof fetch,
+  });
+  expect(
+    (
+      await bridge.call("create_session", {
+        handle: "arrival",
+        arrivalSource: "explicit_human_instruction",
+        arrivalReferrer: "requester",
+      })
+    ).ok,
+  ).toBe(true);
+  expect(body.arrivalSource).toBe("explicit_human_instruction");
+  expect(body.arrivalReferrer).toBe("requester");
+});
+
+it("preserves HTTP refusal classification without exposing response secrets", async () => {
+  const store = new GatewaySessionStore();
+  store.set({
+    sessionId: "error",
+    handle: "error",
+    agentId: "agt_error",
+    actions: [],
+    expiresAt: "2099-01-01T00:00:00Z",
+    sessionToken: SESSION_TOKEN,
+  });
+  const bridge = new HavenGatewayBridge({
+    store,
+    fetch: (async () =>
+      jsonResponse(400, {
+        error: "SecretDetected",
+        message: "Content refusal for evidenceNote, not a length error.",
+        sessionToken: LEAK_TOKEN,
+      })) as typeof fetch,
+  });
+  const result = await bridge.call("handoff", {
+    op: "complete",
+    handoffId: "hnd_error",
+    evidenceNote: "A detailed review",
+  });
+  expect(result.errorDetails).toEqual({ status: 400, code: "SecretDetected" });
+  expect(toolResultLeaksSecrets(result)).toBe(false);
+});

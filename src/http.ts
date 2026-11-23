@@ -1,5 +1,6 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { DEFAULT_NEGOTIATED_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { HavenGatewayBridge, type HavenGatewayBridgeOptions } from "./gateway.js";
 import { createHavenMcpServer } from "./server.js";
 import { GatewaySessionStore, type StoredGatewaySession } from "./session.js";
@@ -30,6 +31,7 @@ type SessionSlot = {
   readonly transport: WebStandardStreamableHTTPServerTransport;
   readonly server: Server;
   readonly bridge: HavenGatewayBridge;
+  protocolVersion?: string;
 };
 
 const corsHeaders = (req: Request): Record<string, string> => {
@@ -55,6 +57,27 @@ const withCors = (req: Request, res: Response): Response => {
     statusText: res.statusText,
     headers,
   });
+};
+
+/** Read the SDK's finite initialize response in JSON or SSE mode. */
+const initializedProtocol = async (response: Response): Promise<string | undefined> => {
+  const text = await response.text();
+  const payloads = response.headers.get("content-type")?.includes("text/event-stream")
+    ? text
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim())
+    : [text];
+  for (const value of payloads) {
+    try {
+      const payload = JSON.parse(value) as { result?: { protocolVersion?: unknown } };
+      if (typeof payload.result?.protocolVersion === "string")
+        return payload.result.protocolVersion;
+    } catch {
+      /* Ignore non-JSON SSE control lines. */
+    }
+  }
+  return undefined;
 };
 
 /**
@@ -100,23 +123,39 @@ export const createHavenMcpHttpHandler = (
   const enableJsonResponse = opts.enableJsonResponse ?? true;
   const sessions = new Map<string, SessionSlot>();
 
-  const createSlot = async (sessionId: string): Promise<SessionSlot> => {
+  const creating = new Map<string, Promise<SessionSlot | null>>();
+
+  const createSlot = async (
+    sessionId: string,
+    request: Request,
+    requireStored: boolean,
+  ): Promise<SessionSlot | null> => {
     const durable = opts.durable;
+    const existing = durable && !opts.store ? await durable.load(sessionId) : null;
+    const liveStored =
+      existing &&
+      Date.parse(existing.expiresAt) > Date.now() &&
+      (existing.sessionToken || existing.resumeToken);
+    if (existing && !liveStored && durable) await durable.clear(sessionId);
+    // A caller-supplied unknown or expired id must not allocate a protocol slot.
+    if (requireStored && !liveStored) return null;
+    let slot: SessionSlot;
     const store =
       opts.store ??
       new GatewaySessionStore(
         durable
           ? {
-              onSet: (session) => durable.save(sessionId, session),
+              onSet: (session) =>
+                durable.save(sessionId, {
+                  ...session,
+                  protocolVersion: slot.protocolVersion,
+                }),
               onClear: () => durable.clear(sessionId),
             }
           : {},
       );
 
-    if (durable && !opts.store) {
-      const existing = await durable.load(sessionId);
-      if (existing) store.hydrate(existing);
-    }
+    if (liveStored && existing) store.hydrate(existing);
 
     const bridge = new HavenGatewayBridge({
       baseUrl: opts.baseUrl,
@@ -138,13 +177,104 @@ export const createHavenMcpHttpHandler = (
             /* ignore */
           }
         }
-        if (durable) await durable.clear(closedId);
+        if (slot) {
+          slot.bridge.store.clear();
+          await slot.bridge.store.flush();
+        } else if (durable) await durable.clear(closedId);
       },
     });
     await server.connect(transport);
-    const slot: SessionSlot = { sessionId, transport, server, bridge };
+    slot = {
+      sessionId,
+      transport,
+      server,
+      bridge,
+      protocolVersion: existing?.protocolVersion,
+    };
+    if (requireStored) {
+      const body =
+        request.method === "POST"
+          ? ((await request
+              .clone()
+              .json()
+              .catch(() => null)) as { method?: string } | null)
+          : null;
+      if (body?.method !== "initialize") {
+        // Restore the tools-only server through the SDK's public lifecycle API.
+        // The old MCP id is the bearer, and the durable credential lease is the gate.
+        // No Gateway session is minted, and no SDK private fields are modified.
+        const restored = await transport.handleRequest(
+          new Request(request.url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json, text/event-stream",
+            },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: "haven-restore",
+              method: "initialize",
+              params: {
+                protocolVersion:
+                  existing?.protocolVersion ??
+                  request.headers.get("mcp-protocol-version") ??
+                  DEFAULT_NEGOTIATED_PROTOCOL_VERSION,
+                capabilities: {},
+                clientInfo: { name: "haven-restored-tools-client", version: "1" },
+              },
+            }),
+          }),
+        );
+        const protocolVersion = await initializedProtocol(restored);
+        if (!restored.ok || !protocolVersion) {
+          await server.close();
+          throw new Error(
+            "Unable to restore MCP transport; durable credentials retained.",
+          );
+        }
+        slot.protocolVersion = protocolVersion;
+        await transport.handleRequest(
+          new Request(request.url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json, text/event-stream",
+              "mcp-session-id": sessionId,
+            },
+            body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+          }),
+        );
+      }
+    }
     sessions.set(sessionId, slot);
     return slot;
+  };
+
+  const getSlot = async (
+    id: string,
+    request: Request,
+    requireStored: boolean,
+  ): Promise<SessionSlot | null> => {
+    const slot = sessions.get(id);
+    if (slot) return slot;
+    let pending = creating.get(id);
+    if (!pending) {
+      pending = createSlot(id, request, requireStored);
+      creating.set(id, pending);
+    }
+    try {
+      return await pending;
+    } finally {
+      if (creating.get(id) === pending) creating.delete(id);
+    }
+  };
+
+  const handle = async (slot: SessionSlot, request: Request): Promise<Response> => {
+    const response = await slot.transport.handleRequest(request);
+    if (!slot.protocolVersion && response.ok) {
+      slot.protocolVersion = await initializedProtocol(response.clone());
+    }
+    return response;
   };
 
   const fetchHandler = async (request: Request): Promise<Response> => {
@@ -174,12 +304,24 @@ export const createHavenMcpHttpHandler = (
     const existingId = accepted.headers.get("mcp-session-id");
 
     if (existingId) {
-      let slot = sessions.get(existingId);
-      if (!slot) {
-        // Wake path: recreate transport for known session id (DO / cold isolate).
-        slot = await createSlot(existingId);
-      }
-      const res = await slot.transport.handleRequest(accepted);
+      const slot = await getSlot(existingId, accepted, true);
+      if (!slot)
+        return withCors(
+          request,
+          Response.json(
+            {
+              jsonrpc: "2.0",
+              id: null,
+              error: {
+                code: -32001,
+                message:
+                  "MCP session not found or expired. A handle alone cannot recover it.",
+              },
+            },
+            { status: 404 },
+          ),
+        );
+      const res = await handle(slot, accepted);
       return withCors(request, res);
     }
 
@@ -189,7 +331,7 @@ export const createHavenMcpHttpHandler = (
     const routedSlot = accepted.headers.get("x-haven-mcp-slot-id")?.trim();
     const sessionId =
       routedSlot && routedSlot.length > 0 ? routedSlot : crypto.randomUUID();
-    const slot = await createSlot(sessionId);
+    const slot = (await getSlot(sessionId, accepted, false))!;
 
     // Strip routing header before the MCP transport sees the request.
     let mcpRequest = accepted;
@@ -198,7 +340,7 @@ export const createHavenMcpHttpHandler = (
       headersIn.delete("x-haven-mcp-slot-id");
       mcpRequest = new Request(accepted, { headers: headersIn });
     }
-    const res = await slot.transport.handleRequest(mcpRequest);
+    const res = await handle(slot, mcpRequest);
     const headers = new Headers(res.headers);
     if (!headers.get("mcp-session-id")) {
       headers.set("mcp-session-id", sessionId);

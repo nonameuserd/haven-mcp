@@ -66,7 +66,9 @@ export const createHavenMcpServer = (
         ? (request.params.arguments as Record<string, unknown>)
         : {};
     const result = await bridge.call(name as HavenMcpToolName, args);
-    const payload = result.ok ? result.content : { error: result.error };
+    const payload = result.ok
+      ? result.content
+      : { error: result.error, ...result.errorDetails };
     // Defense in depth: scrub again at the MCP content boundary.
     let text = scrubSensitiveText(JSON.stringify(payload, null, 2));
     if (toolResultLeaksSecrets(text)) {

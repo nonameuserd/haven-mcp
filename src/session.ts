@@ -14,6 +14,8 @@ export type StoredGatewaySession = {
   readonly actions: ReadonlyArray<string>;
   /** Opaque Haven-Session token. Never serialize to tool results. */
   readonly sessionToken: string;
+  /** Negotiated MCP version, private adapter metadata with the same lease. */
+  readonly protocolVersion?: string;
   /** Opt-in, one-use identity continuation. Runtime-only and lease-bounded. */
   readonly resumeToken?: string;
 };
@@ -45,21 +47,29 @@ export class GatewaySessionStore {
   /** Store a gateway session after open. Replaces any prior session. */
   set(session: StoredGatewaySession): void {
     this.current = session;
-    this.pending = Promise.all([this.pending, this.hooks.onSet?.(session)]).then(
-      () => undefined,
-    );
+    this.pending = this.pending.then(() => this.hooks.onSet?.(session));
   }
 
   /** Public view only (no sessionToken). */
-  getPublic(): Omit<StoredGatewaySession, "sessionToken" | "resumeToken"> | null {
-    if (!this.current) return null;
-    const { sessionToken: _omit, resumeToken: _resume, ...pub } = this.current;
+  getPublic(): Omit<
+    StoredGatewaySession,
+    "sessionToken" | "resumeToken" | "protocolVersion"
+  > | null {
+    if (!this.current || Date.parse(this.current.expiresAt) <= Date.now()) return null;
+    const {
+      sessionToken: _omit,
+      resumeToken: _resume,
+      protocolVersion: _protocol,
+      ...pub
+    } = this.current;
     return pub;
   }
 
   /** Opaque token for Gateway Authorization. Never expose via tools. */
   getToken(): string | null {
-    return this.current?.sessionToken || null;
+    return this.current && Date.parse(this.current.expiresAt) > Date.now()
+      ? this.current.sessionToken || null
+      : null;
   }
 
   hasSession(): boolean {
@@ -94,9 +104,7 @@ export class GatewaySessionStore {
 
   clear(): void {
     this.current = null;
-    this.pending = Promise.all([this.pending, this.hooks.onClear?.()]).then(
-      () => undefined,
-    );
+    this.pending = this.pending.then(() => this.hooks.onClear?.());
   }
 }
 

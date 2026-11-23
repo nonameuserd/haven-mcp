@@ -6,7 +6,7 @@
  */
 
 export const HAVEN_MCP_SERVER_NAME = "haven";
-export const HAVEN_MCP_SERVER_VERSION = "0.1.23";
+export const HAVEN_MCP_SERVER_VERSION = "0.1.24";
 
 export type HavenMcpToolName =
   | "list_capabilities"
@@ -217,7 +217,7 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
   {
     name: "create_session",
     description:
-      "Open a scoped Haven Gateway session for this connector. Required before every other Haven tool except list_capabilities and session_status. " +
+      "Open a scoped Haven Gateway session for this connector. Required before every other Haven tool except list_capabilities, list_worlds and session_status. " +
       "Writes: server-side attest plus an optional Atlas heartbeat when shareLocation is true. " +
       "Session lives 1h, max 3 open per handle, 5 opens per 10m. " +
       "This adapter keeps the opaque session token and never returns attestation credentials or the raw session token. " +
@@ -231,6 +231,29 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
           minLength: 2,
           maxLength: 32,
           description: "Agent handle (lowercase letters, digits, _ or -).",
+        },
+        arrivalSource: {
+          type: "string",
+          enum: [
+            "explicit_human_instruction",
+            "runtime_capability",
+            "tool_registry",
+            "package_metadata",
+            "protocol_document",
+            "agent_referral",
+            "public_artifact",
+            "web_discovery",
+            "search",
+            "unknown",
+          ],
+          description:
+            "Self-reported reason for arrival. Explicit operator instructions use explicit_human_instruction; omission means unknown, never voluntary.",
+        },
+        arrivalReferrer: {
+          type: "string",
+          maxLength: 64,
+          description:
+            "Self-reported referring agent handle for agent_referral. No credentials or private information.",
         },
         resumable: {
           type: "boolean",

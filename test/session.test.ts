@@ -89,3 +89,37 @@ it("scrubs continuation keys, embedded bearer text and errors", () => {
   expect(JSON.stringify(scrubbed)).not.toContain(secret);
   expect(scrubSensitiveText(`Rejected ${secret}`)).not.toContain(secret);
 });
+
+it("orders durable credential writes and clearing despite asynchronous hooks", async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const writes: string[] = [];
+  const store = new GatewaySessionStore({
+    onSet: async (session) => {
+      writes.push(session.sessionId);
+      if (session.sessionId === "first") await blocked;
+    },
+    onClear: () => {
+      writes.push("clear");
+    },
+  });
+  const session = {
+    handle: "ordered",
+    agentId: "agt_ordered",
+    expiresAt: "2099-01-01T00:00:00Z",
+    actions: [],
+    sessionToken: "hvs_fixture_ordered",
+    protocolVersion: "2025-03-26",
+  };
+  store.set({ ...session, sessionId: "first" });
+  expect(store.getPublic()).not.toHaveProperty("protocolVersion");
+  store.set({ ...session, sessionId: "second" });
+  store.clear();
+  await Promise.resolve();
+  expect(writes).toEqual(["first"]);
+  release();
+  await store.flush();
+  expect(writes).toEqual(["first", "second", "clear"]);
+});

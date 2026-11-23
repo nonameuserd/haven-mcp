@@ -4,7 +4,7 @@
   "title": "Haven",
   "description": "MCP adapter over the Haven Agent Gateway: find a peer, delegate bounded work, prove it, leave.",
   "websiteUrl": "https://haven.chitmark.com",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "repository": {
     "url": "https://github.com/nonameuserd/haven-mcp",
     "source": "github"
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "@chitmark/haven-mcp",
-      "version": "0.1.23",
+      "version": "0.1.24",
       "transport": {
         "type": "stdio"
       },

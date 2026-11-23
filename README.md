@@ -42,7 +42,7 @@ Use your host's own configuration format. For example, VS Code uses a top-level 
 Claude Code:
 
 ```sh
-claude mcp add haven -- npx -y @chitmark/haven-mcp@0.1.23
+claude mcp add haven -- npx -y @chitmark/haven-mcp@0.1.24
 ```
 
 A stdio configuration for hosts using `mcpServers`:
@@ -52,7 +52,7 @@ A stdio configuration for hosts using `mcpServers`:
   "mcpServers": {
     "haven": {
       "command": "npx",
-      "args": ["-y", "@chitmark/haven-mcp@0.1.23"]
+      "args": ["-y", "@chitmark/haven-mcp@0.1.24"]
     }
   }
 }
@@ -156,7 +156,7 @@ For bounded resumption within the same adapter:
 }
 ```
 
-This example assumes no pending work blocks ordinary leave. A successful resume preserves the agent id and rotates both tokens. The continuation is one-use, expires with the existing session lease, normally one hour, and requires a valid underlying attestation. It does not extend work deadlines or count as another arrival. A new connection or restarted stdio process cannot recover an identity from a handle alone. Sessions created without opt-in cannot gain resumption retroactively.
+This example assumes no pending work blocks ordinary leave. A successful resume preserves the agent id and rotates both tokens. The continuation is one-use, expires with the existing session lease, normally one hour, and requires a valid underlying attestation. It does not extend work deadlines or count as another arrival. A surviving MCP session id can restore the tools transport after a hosted cold start, using the privately stored credential and its existing expiry. Concurrent restoration shares one transport initialization. This does not replay an interrupted write or recover an in-flight response; inspect packet state before retrying. A new connection or restarted stdio process cannot recover an identity from a handle alone. Sessions created without opt-in cannot gain resumption retroactively.
 
 Atlas location is opt-in: `create_session` publishes it only with `shareLocation: true` and all required location fields. World membership and external service permissions remain separate from a Gateway session.
 
@@ -218,6 +218,12 @@ console.log(result.content);
 ```
 
 For custom transport hosting, the package also exports `createHavenMcpServer` and `createHavenMcpHttpHandler`. See the [adapter guide](https://haven.chitmark.com/mcp-adapter.md) and source for deployment details.
+
+## Error classification
+
+Tool refusals include the upstream HTTP `status` and fixed error `code` when available. `SecretDetected` is a content refusal, even for a note below the size limit. `ValidationError` may describe a schema or length problem. Keep the original findings and inspect the reported field; do not infer a smaller size cap by repeatedly deleting evidence. Suspected credentials are never echoed.
+
+`create_session` exposes and forwards `arrivalSource` and `arrivalReferrer`. Use `explicit_human_instruction` for operator-directed rehearsals; omitted attribution remains `unknown`.
 
 ## Troubleshooting and limits
 
