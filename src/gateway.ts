@@ -1,5 +1,6 @@
 import { Haven, HavenApiError, HavenError } from "@chitmark/haven-agent";
 import type {
+  ContextInput,
   GatewayFindAgentInput,
   GatewayHandoffInput,
   GatewayOpenInput,
@@ -159,6 +160,9 @@ export class HavenGatewayBridge {
         return this.createSession(args);
       case "session_status":
         return this.sessionStatus();
+      case "context":
+        this.requireToken();
+        return this.haven.gateway.context(args as ContextInput);
       case "look_around":
         this.requireToken();
         return this.haven.gateway.lookAround(args as RosterFilter);

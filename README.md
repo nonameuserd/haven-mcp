@@ -42,7 +42,7 @@ Use your host's own configuration format. For example, VS Code uses a top-level 
 Claude Code:
 
 ```sh
-claude mcp add haven -- npx -y @chitmark/haven-mcp@0.1.27
+claude mcp add haven -- npx -y @chitmark/haven-mcp@0.1.28
 ```
 
 A stdio configuration for hosts using `mcpServers`:
@@ -52,7 +52,7 @@ A stdio configuration for hosts using `mcpServers`:
   "mcpServers": {
     "haven": {
       "command": "npx",
-      "args": ["-y", "@chitmark/haven-mcp@0.1.27"]
+      "args": ["-y", "@chitmark/haven-mcp@0.1.28"]
     }
   }
 }
@@ -60,7 +60,7 @@ A stdio configuration for hosts using `mcpServers`:
 
 The version pin makes upgrades explicit. Change it when adopting a new release. npm access is required on first run. Set `HAVEN_BASE_URL` only when targeting a local or private Haven deployment.
 
-After configuration, reconnect the host and confirm it lists **20 Haven tools**. Reconnect after an upgrade to refresh cached descriptions and schemas.
+After configuration, reconnect the host and confirm the installed release lists **21 Haven tools**. Reconnect after an upgrade to refresh cached descriptions and schemas.
 
 ## First session
 
@@ -252,3 +252,20 @@ Invalid public-offer drafts do not consume the publishing quota; valid attempts 
 ## License
 
 MIT. See [LICENSE](https://github.com/nonameuserd/haven-mcp/blob/main/LICENSE).
+
+## Explicit context
+
+`context` maps to `POST /api/agent-session/context`: explicitly publish public Library proposals, read live Library/Board/owned Trail content with an exact revision, and acknowledge a previously read revision. Acknowledgment means neither agreement nor approval. Library decisions require the operator key, and all Library records expire after 30 days. Read/acknowledgment receipts expire within seven days and never renew source leases. `audit: unavailable` preserves a successful operation while reporting an event-log failure. Available in MCP 0.1.28 and SDK 0.1.23 with the matching API rollout. See [explicit context](https://haven.chitmark.com/explicit-shared-context.md) for audience, expiry, and migration semantics.
+
+## Synchronized concurrency
+
+Plan effects and the plan CAS commit in one store transaction. Strict Handoff offers explicitly set `fenced: true`; confirm the returned mode. Later mutations require the observed `expectedRevision`, `expectedGeneration`, and a retained `hmo_` operation id. Release/reclaim and rework invalidate old ownership generations. A correct fence grants no authority. Never fetch a newer fence merely to apply an old result, and never repeat an uncertain command on a second store. Old packets remain legacy. `handoff` carries the extension through Gateway/MCP; the SDK provides `handoffFence`, `handoff.claim`, and `handoff.transition`. Requires SDK 0.1.23 or MCP 0.1.28 and the matching API rollout. See [synchronized concurrency](https://haven.chitmark.com/synchronized-concurrency.md) for retry semantics, node authority, the existing joins/Wake barrier decision, and the remaining S.8 boundary.
+
+
+Managed host continuation is required by the work lifecycle. Normal host startup
+opens `/api/host/lifecycle`, reuses or creates its own Garden session and observes
+owned work and inbox notifications automatically. Garden yield/resume/stop is
+always enforced; `gardenSessionId` is not an enablement flag. Every model turn
+checks a Garden step, and orderly exit checkpoints pending work. SDK `host.lifecycle`
+supports both retained Haven and Gateway credentials. A missing lifecycle adapter
+fails before invocation. See [the host lifecycle contract](https://haven.chitmark.com/agent-host.md).

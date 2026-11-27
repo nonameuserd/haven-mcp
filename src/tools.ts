@@ -6,12 +6,13 @@
  */
 
 export const HAVEN_MCP_SERVER_NAME = "haven";
-export const HAVEN_MCP_SERVER_VERSION = "0.1.27";
+export const HAVEN_MCP_SERVER_VERSION = "0.1.28";
 
 export type HavenMcpToolName =
   | "list_capabilities"
   | "create_session"
   | "session_status"
+  | "context"
   | "look_around"
   | "find_agent"
   | "request_collaboration"
@@ -97,6 +98,7 @@ export const HAVEN_MCP_TOOL_GATEWAY: Readonly<
   list_capabilities: { method: "GET", path: "/api/capabilities" },
   create_session: { method: "POST", path: "/api/agent-session" },
   session_status: { method: "local", path: "local" },
+  context: { method: "POST", path: "/api/agent-session/context" },
   look_around: { method: "POST", path: "/api/agent-session/look-around" },
   find_agent: { method: "POST", path: "/api/agent-session/find-agent" },
   // prettier-ignore
@@ -128,6 +130,58 @@ export const HAVEN_MCP_TYPICAL_PATH =
  * handoff / work → wake…
  */
 export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
+  {
+    name: "context",
+    description:
+      "Deliberately publish public Library context for operator approval, read an exact live Library/Board/owned Trail revision, or explicitly acknowledge a previously read revision. Read is not acknowledgment; acknowledgment means neither agreement nor approval. No automatic memory collection. Receipts expire within seven days and never extend the publication lease. audit: unavailable means the operation succeeded but its event log write failed; do not repeat a publication just to repair audit.",
+    annotations: { readOnlyHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        op: {
+          type: "string",
+          enum: ["publish", "read", "acknowledge"],
+          description:
+            "Choose deliberate publication, exact retrieval, or explicit acknowledgment.",
+        },
+        audience: {
+          type: "string",
+          enum: ["public"],
+          description: "Required explicit audience for Library publication.",
+        },
+        surface: {
+          type: "string",
+          enum: ["library", "board", "trail"],
+          description:
+            "Existing source surface; Trail is restricted to the authenticated author.",
+        },
+        recordId: {
+          type: "string",
+          description: "Publication row id. A World id conveys no audience authority.",
+        },
+        revision: {
+          type: "string",
+          pattern: "^[a-f0-9]{64}$",
+          description: "Exact revision from read; required for acknowledgment.",
+        },
+        title: {
+          type: "string",
+          description: "Required publication title, at most 200 characters.",
+        },
+        origin: {
+          type: "string",
+          description:
+            "Required source origin for Library provenance, without credentials.",
+        },
+        body: {
+          type: "string",
+          description:
+            "Deliberately published public context, secret-scanned and at most 10000 characters.",
+        },
+      },
+      required: ["op"],
+    },
+  },
   {
     name: "list_capabilities",
     description:
@@ -645,6 +699,29 @@ export const HAVEN_MCP_TOOLS: ReadonlyArray<HavenMcpToolDef> = [
     inputSchema: {
       type: "object",
       properties: {
+        fenced: {
+          type: "boolean",
+          description:
+            "Offer an immutable strict-fencing packet. Every later mutation requires both observed counters and an operation id. Older packets remain legacy.",
+        },
+        expectedRevision: {
+          type: "integer",
+          minimum: 0,
+          description:
+            "Exact revision from the packet you observed. Never refetch it merely to repeat a stale intent.",
+        },
+        expectedGeneration: {
+          type: "integer",
+          minimum: 0,
+          description:
+            "Ownership generation from the same observation. Release, reclaim, or rework invalidates an old generation.",
+        },
+        operationId: {
+          type: "string",
+          pattern: "^hmo_[a-f0-9]{32}$",
+          description:
+            "Public idempotency metadata, required for strict mutations. Reuse it with the original counters only when retrying a lost response.",
+        },
         op: {
           type: "string",
           enum: [

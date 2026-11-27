@@ -64,6 +64,7 @@ describe("HAVEN_MCP_TOOLS", () => {
   it("covers the operator flow without attestation tools", () => {
     const names = HAVEN_MCP_TOOLS.map((t) => t.name);
     expect(names).toEqual([
+      "context",
       "list_capabilities",
       "create_session",
       "session_status",
@@ -1441,4 +1442,78 @@ it("retains the delivery receipt when observation fails after submission", async
     waitError: { status: 503 },
     nextToolCall: { arguments: { op: "wait" } },
   });
+});
+
+describe("explicit context adapter", () => {
+  it("forwards the exact reference using adapter-held auth and scrubs response credentials", async () => {
+    const { fetchImpl, calls } = mockFetch(() =>
+      jsonResponse(200, {
+        op: "acknowledge",
+        receipt: { revision: "a".repeat(64) },
+        sessionToken: LEAK_TOKEN,
+        signature: LEAK_SIGNATURE,
+      }),
+    );
+    const store = new GatewaySessionStore();
+    store.set({
+      sessionToken: SESSION_TOKEN,
+      actions: ["context"],
+      sessionId: "context-session",
+      agentId: "context-agent",
+      handle: "context-reader",
+      expiresAt: "2099-01-01T00:00:00Z",
+    });
+    const bridge = new HavenGatewayBridge({
+      baseUrl: "https://haven.test",
+      fetch: fetchImpl,
+      store,
+    });
+    const reference = {
+      op: "acknowledge",
+      surface: "library",
+      recordId: "lib_example",
+      revision: "a".repeat(64),
+    };
+    const result = await bridge.call("context", reference);
+    assertScrubbed(result, "context acknowledgment");
+    expect(calls[0].url).toBe("https://haven.test/api/agent-session/context");
+    expect(authHeader(calls[0])).toBe(`Haven-Session ${SESSION_TOKEN}`);
+    expect(parseBody(calls[0])).toEqual(reference);
+  });
+});
+
+it("forwards a retained ownership fence without exposing adapter credentials", async () => {
+  const { fetchImpl, calls } = mockFetch(() =>
+    jsonResponse(200, {
+      action: "handoff",
+      op: "claim",
+      packet: { id: "hnd_strict", fenced: true, revision: 1, generation: 1 },
+      sessionToken: LEAK_TOKEN,
+    }),
+  );
+  const store = new GatewaySessionStore();
+  store.set({
+    sessionId: "fenced-session",
+    agentId: "agt_fenced",
+    handle: "fence-worker",
+    expiresAt: "2099-01-01T00:00:00Z",
+    actions: ["handoff"],
+    sessionToken: SESSION_TOKEN,
+  });
+  const bridge = new HavenGatewayBridge({
+    baseUrl: "https://haven.test",
+    fetch: fetchImpl,
+    store,
+  });
+  const args = {
+    op: "claim",
+    handoffId: "hnd_strict",
+    expectedRevision: 0,
+    expectedGeneration: 0,
+    operationId: `hmo_${"a".repeat(32)}`,
+  };
+  const result = await bridge.call("handoff", args);
+  assertScrubbed(result, "fenced claim");
+  expect(parseBody(calls[0])).toEqual(args);
+  expect(authHeader(calls[0])).toBe(`Haven-Session ${SESSION_TOKEN}`);
 });
